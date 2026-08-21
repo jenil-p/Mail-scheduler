@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum EmailStatus {
+  pending
+  sent
+  failed
+  rate_limited
+}
+
+model EmailJob {
+  id              String      @id @default(uuid()) @db.Uuid
+  userId          String      @map("user_id")
+  recipientEmail  String      @map("recipient_email")
+  subject         String
+  body            String
+  senderEmail     String      @map("sender_email")
+  scheduledAt     DateTime    @map("scheduled_at") @db.Timestamptz()
+  status          EmailStatus @default(pending)
+  sentAt          DateTime?   @map("sent_at") @db.Timestamptz()
+  errorMessage    String?     @map("error_message") @db.Text
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime    @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([senderEmail, status])
+  @@index([userId, status])
+  @@map("email_jobs")
+}
