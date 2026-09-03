@@ -2,15 +2,16 @@ import Redis from "ioredis";
 import { config } from "../config";
 
 /**
- * Redis-backed sliding-window-log rate limiter for emails per hour per sender.
- *
- * Instead of a simple counter + TTL (rolling-window bucket), this stores every
- * send timestamp in a Redis sorted set (ZSET) and trims entries older than the
- * window on each check.  This gives an accurate count of sends in the trailing
- * N-minute window with no rounding or boundary artefacts.
- *
+ * Sliding-window-log rate limiter for emails per hour per sender.
+ * 
  * Key format: rate_limit:{senderEmail}:log
+ * 
+ * Algorithm (sliding window log):
+ * - Every accepted request's timestamp is stored in a sorted set.
+ * - On each attempt, entries older than the window are erased, then the request is allowed, if the remaining count is below the limit.
+ * - The window slides continuously with time, so there is no boundary spike
  */
+
 export class RateLimiter {
   private redis: Redis;
   private maxPerWindow: number;
@@ -83,23 +84,6 @@ export class RateLimiter {
     )) as number;
 
     return result === 1;
-  }
-
- // Check how many emails have been sent in the current window without recording a new send
-
-  async getCurrentCount(senderEmail: string): Promise<number> {
-    const key = this.getKey(senderEmail);
-    const now = Date.now();
-    const windowStart = now - this.windowMs;
-
-    // Trim stale entries first
-    await this.redis.zremrangebyscore(key, "-inf", windowStart.toString());
-    return this.redis.zcard(key);
-  }
-
-  // Get the max emails allowed per window.
-  getMaxPerWindow(): number {
-    return this.maxPerWindow;
   }
 
   /**

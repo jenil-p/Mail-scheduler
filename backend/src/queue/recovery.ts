@@ -17,7 +17,7 @@ export async function recoverPendingJobs(): Promise<{
 
   // Fetch all pending jobs (ordered by scheduledAt so past-due jobs go first)
   const pendingJobs = await prisma.emailJob.findMany({
-    where: { status: "pending" },
+    where: { status: {in: ["pending", "rate_limited"]} },
     orderBy: { scheduledAt: "asc" },
     select: {
       id: true,
