@@ -11,9 +11,6 @@ dist/
 .next/
 out/
 
-# Prisma
-backend/prisma/migrations/
-
 # IDE
 .vscode/
 .idea/
