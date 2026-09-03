@@ -1,0 +1,19 @@
+# Host dependencies / build output (rebuilt inside the image)
+node_modules
+.next
+
+# Secrets — never ship into a build context
+.env
+.env.local
+.env.production
+.env*
+
+# VCS & IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Logs
+*.log
+npm-debug.log*

@@ -50,56 +50,64 @@ Next.js UI ──▶ Express API ──▶ BullMQ Queue ──▶ BullMQ Worker
 
 ### Prerequisites
 
-- Node.js 20+
 - Docker & Docker Compose
-- Google OAuth credentials
+- Google OAuth credentials (for sign-in)
 
-### 1. Install Dependencies
-
-```bash
-cd backend && npm install
-cd ../frontend && npm install
-cd ..
-```
-
-### 2. Configure Environment
+### 1. Configure Environment
 
 Copy the example env files and fill in your credentials:
 
 ```bash
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env.local
+cp .env.example .env                          # frontend build-time values (Google client ID)
+cp backend/.env.example backend/.env          # backend secrets (Google OAuth, JWT)
 ```
 
-Then edit each file — see the .env.example files in backend/ and frontend/ for all available options.
+Then edit each file:
 
-### 3. Start Infrastructure
+- **`.env`** (root) — docker compose reads this automatically for the frontend's build-time `NEXT_PUBLIC_*` values: `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (required) and optionally `NEXT_PUBLIC_API_URL`.
+- **`backend/.env`** — Google OAuth `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` and `JWT_SECRET`. `DATABASE_URL`, `REDIS_HOST`, `PORT` and `NODE_ENV` are overridden by docker-compose.yml — no need to touch them.
+
+### 2. Run the whole stack
 
 ```bash
-docker compose up -d
+docker compose up --build -d
 ```
 
-Starts PostgreSQL (port 5432) and Redis (port 6379) with AOF persistence.
-
-### 4. Database Setup
-
-```bash
-cd backend
-npx prisma migrate dev --name init
-npx prisma generate
-```
-
-### 5. Run
-
-```bash
-# Terminal 1
-cd backend && npm run dev
-
-# Terminal 2
-cd frontend && npm run dev
-```
+This builds the backend and frontend images, starts PostgreSQL + Redis, applies database migrations automatically (via the backend's entrypoint), and starts the API server + BullMQ worker + Next.js dashboard.
 
 Visit http://localhost:3000 and sign in with Google.
+
+| Service   | URL                          |
+|-----------|------------------------------|
+| Frontend  | http://localhost:3000        |
+| Backend   | http://localhost:4000        |
+| PostgreSQL| localhost:5432 (sendly/sendly_pass) |
+| Redis     | localhost:6379               |
+
+Useful commands:
+
+```bash
+docker compose logs -f backend   # watch API/worker logs
+docker compose down              # stop (data persists in volumes)
+docker compose down -v           # stop and wipe database + redis
+```
+
+### Run without Docker (local development)
+
+If you prefer to run the services directly on Node.js 20+:
+
+```bash
+cp frontend/.env.example frontend/.env.local
+
+# Terminal 1 — infrastructure
+docker compose up -d postgres redis
+
+# Terminal 2 — backend
+cd backend && npm install && npx prisma generate && npm run dev
+
+# Terminal 3 — frontend
+cd frontend && npm install && npm run dev
+```
 
 ### Google OAuth Setup
 
@@ -108,7 +116,9 @@ Visit http://localhost:3000 and sign in with Google.
 3. Create an OAuth 2.0 Client ID (Web application)
 4. Add http://localhost:3000 as authorized JavaScript origin
 5. Add http://localhost:4000/api/auth/google/callback as redirect URI
-6. Put the Client ID in both .env files, Client Secret in backend/.env
+6. Put the Client ID in **both** the root `.env` (`NEXT_PUBLIC_GOOGLE_CLIENT_ID`) and `backend/.env` (`GOOGLE_CLIENT_ID`); Client Secret in `backend/.env`
+
+These URLs match the docker-compose port mappings (3000/4000), so they work for both Docker and local development.
 
 ---
 
@@ -179,9 +189,13 @@ Uses a **sliding window log** — the most accurate rate limiting approach:
 ```
 sendly/
 ├── backend/
+│   ├── Dockerfile           # multi-stage build (prisma generate + tsc)
+│   ├── docker-entrypoint.sh # prisma migrate deploy -> node dist
+│   ├── .dockerignore
 │   ├── prisma/
 │   │   ├── schema.prisma
-│   │   └── prisma.config.ts
+│   │   └── migrations/      # committed, applied automatically in Docker
+│   ├── prisma.config.ts
 │   ├── src/
 │   │   ├── config/index.ts
 │   │   ├── db/pool.ts
@@ -194,6 +208,8 @@ sendly/
 │   └── .env.example
 │
 ├── frontend/
+│   ├── Dockerfile           # multi-stage build (next build)
+│   ├── .dockerignore
 │   ├── src/
 │   │   ├── app/             # layout, page, globals.css
 │   │   ├── components/      # pages, ui/, ComposeModal, Header
@@ -202,6 +218,7 @@ sendly/
 │   │   └── types/index.ts
 │   └── .env.example
 │
-├── docker-compose.yml
+├── docker-compose.yml       # postgres + redis + backend + frontend
+├── .env.example             # frontend build-time values (read by compose)
 └── README.md
 ```
