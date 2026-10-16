@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AI_CONFIG_ENV_KEYS, aiConfigSchema, parseAiConfig } from "./ai";
+import { AI_CONFIG_ENV_KEYS, LLM_PROVIDERS, aiConfigSchema, parseAiConfig } from "./ai";
 
 describe("parseAiConfig", () => {
   it("defaults to the feature being off with the mock provider and no key", () => {
@@ -18,8 +18,9 @@ describe("parseAiConfig", () => {
       timeoutMs: 15_000,
       maxRetries: 4,
       maxParseRetries: 2,
-      rateLimitPerMin: 60,
-      generateConcurrency: 5,
+      rateLimitPerMin: 5,
+      generateConcurrency: 1,
+      dailyResetTz: "America/Los_Angeles",
       sampleSize: 5,
       fullReviewMaxRecipients: 25,
       maxRecipientsPerCampaign: 500,
@@ -29,6 +30,11 @@ describe("parseAiConfig", () => {
       recipientNoteMaxLength: 500,
       introMaxChars: 240,
     });
+  });
+
+  it("leaves the daily request limit unset for the mock provider (no invented quota)", () => {
+    expect(parseAiConfig({}).dailyRateLimit).toBeUndefined();
+    expect(parseAiConfig({ LLM_PROVIDER: "mock" }).dailyRateLimit).toBeUndefined();
   });
 
   it.each(["true", "TRUE", "1", "yes", "on"])("enables the feature for %s", (value) => {
@@ -66,42 +72,60 @@ describe("parseAiConfig", () => {
     ["15000.5", "LLM_TIMEOUT_MS"],
     ["-1", "LLM_MAX_RETRIES"],
     ["0", "GENERATE_CONCURRENCY"],
+    ["0", "LLM_RATE_LIMIT_PER_MIN"],
+    ["1.5", "LLM_RATE_LIMIT_PER_DAY"],
   ])("rejects %s for %s with a readable error", (value, key) => {
-    const env = key === "LLM_TIMEOUT_MS" ? { LLM_TIMEOUT_MS: value } : { [key]: value };
-
-    expect(() => parseAiConfig(env)).toThrowError(new RegExp(key));
+    expect(() => parseAiConfig({ [key]: value })).toThrowError(new RegExp(key));
   });
 
-  it("accepts every supported provider", () => {
-    for (const provider of ["mock", "anthropic", "openai", "google"]) {
-      const ai = parseAiConfig({
-        LLM_PROVIDER: provider,
-        LLM_MODEL: "some-model",
-        LLM_API_KEY: "test-key",
-      });
+  it("accepts exactly mock and gemini", () => {
+    expect(LLM_PROVIDERS).toEqual(["mock", "gemini"]);
 
-      expect(ai.provider).toBe(provider);
+    const gemini = parseAiConfig({
+      LLM_PROVIDER: "gemini",
+      LLM_MODEL: "some-model",
+      LLM_API_KEY: "test-key",
+      LLM_RATE_LIMIT_PER_DAY: "200",
+    });
+
+    expect(gemini).toMatchObject({
+      provider: "gemini",
+      model: "some-model",
+      apiKey: "test-key",
+      dailyRateLimit: 200,
+    });
+  });
+
+  it.each(["anthropic", "openai", "google", "gpt"]) (
+    "rejects the removed/unsupported provider %s and names LLM_PROVIDER",
+    (provider) => {
+      expect(() => parseAiConfig({ LLM_PROVIDER: provider })).toThrowError(/LLM_PROVIDER/);
     }
-  });
+  );
 
-  it("rejects an unsupported provider and names LLM_PROVIDER", () => {
-    expect(() => parseAiConfig({ LLM_PROVIDER: "gemini" })).toThrowError(/LLM_PROVIDER/);
-  });
-
-  it("requires LLM_MODEL and LLM_API_KEY for a real provider", () => {
-    expect(() => parseAiConfig({ LLM_PROVIDER: "google" })).toThrowError(
-      /LLM_MODEL[\s\S]*LLM_API_KEY/
+  it("requires LLM_MODEL, LLM_API_KEY and LLM_RATE_LIMIT_PER_DAY for gemini", () => {
+    expect(() => parseAiConfig({ LLM_PROVIDER: "gemini" })).toThrowError(
+      /LLM_MODEL[\s\S]*LLM_API_KEY[\s\S]*LLM_RATE_LIMIT_PER_DAY/
     );
   });
 
-  it("accepts a real provider once model and key are set", () => {
-    const ai = parseAiConfig({
-      LLM_PROVIDER: "google",
-      LLM_MODEL: "gemini-test-model",
-      LLM_API_KEY: "test-key",
-    });
+  it("requires the daily limit even when model and key are set", () => {
+    expect(() =>
+      parseAiConfig({ LLM_PROVIDER: "gemini", LLM_MODEL: "m", LLM_API_KEY: "k" })
+    ).toThrowError(/LLM_RATE_LIMIT_PER_DAY/);
+  });
 
-    expect(ai).toMatchObject({ provider: "google", model: "gemini-test-model", apiKey: "test-key" });
+  it("accepts the mock provider with no quota configured at all", () => {
+    const ai = parseAiConfig({ LLM_PROVIDER: "mock" });
+
+    expect(ai).toMatchObject({ provider: "mock", dailyRateLimit: undefined, model: undefined });
+  });
+
+  it("validates the daily reset time zone", () => {
+    expect(parseAiConfig({ LLM_DAILY_RESET_TZ: "Europe/Berlin" }).dailyResetTz).toBe("Europe/Berlin");
+    expect(() => parseAiConfig({ LLM_DAILY_RESET_TZ: "Mars/Olympus" })).toThrowError(
+      /LLM_DAILY_RESET_TZ/
+    );
   });
 
   it("rejects a finalize lead longer than the minimum scheduling lead", () => {

@@ -172,6 +172,27 @@ Uses a **sliding window log** — the most accurate rate limiting approach:
 
 ---
 
+## 🤖 AI Personalization — provider and data handling
+
+The AI personalization feature (behind `AI_PERSONALIZATION_ENABLED`, off by default) supports two
+providers: `mock` (deterministic, offline, no key — used by local dev and every test) and `gemini`
+(the Google Gemini API free tier). The model id, API key, per-minute limit and daily request limit
+all come from your own Google AI Studio account; no Gemini quota number is hardcoded in this repo,
+because Google changes them and they differ per model.
+
+**Free-tier data handling.** Per the
+[Gemini API Additional Terms of Service](https://ai.google.dev/gemini-api/terms) ("Unpaid Services",
+effective March 23, 2026), Google uses content submitted through the free tier — your prompts and
+the generated responses — "to provide, improve, and develop Google products and services and machine
+learning technologies", and human reviewers may read API input and output. Therefore:
+
+- Do **not** point development or demo campaigns at real personal data.
+- Dev/demo CSVs and any test fixtures must contain fake recipients only.
+- Paid Gemini quota is excluded from that use, and for users in the EEA, Switzerland and the UK the
+  paid-services terms apply to unpaid quota as well.
+
+---
+
 ## 💡 Why These Choices
 
 | Decision | Reason |
