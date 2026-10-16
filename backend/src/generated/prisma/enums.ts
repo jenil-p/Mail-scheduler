@@ -59,7 +59,7 @@ export const DraftStatus = {
   FALLBACK: 'FALLBACK',
   APPROVED: 'APPROVED',
   HELD: 'HELD',
-  SENT: 'SENT'
+  QUEUED: 'QUEUED'
 } as const
 
 export type DraftStatus = (typeof DraftStatus)[keyof typeof DraftStatus]

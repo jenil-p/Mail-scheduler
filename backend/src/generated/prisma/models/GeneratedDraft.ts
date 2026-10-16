@@ -359,6 +359,7 @@ export type GeneratedDraftWhereInput = {
   updatedAt?: Prisma.DateTimeFilter<"GeneratedDraft"> | Date | string
   campaign?: Prisma.XOR<Prisma.CampaignScalarRelationFilter, Prisma.CampaignWhereInput>
   recipient?: Prisma.XOR<Prisma.RecipientScalarRelationFilter, Prisma.RecipientWhereInput>
+  emailJob?: Prisma.XOR<Prisma.EmailJobNullableScalarRelationFilter, Prisma.EmailJobWhereInput> | null
 }
 
 export type GeneratedDraftOrderByWithRelationInput = {
@@ -385,6 +386,7 @@ export type GeneratedDraftOrderByWithRelationInput = {
   updatedAt?: Prisma.SortOrder
   campaign?: Prisma.CampaignOrderByWithRelationInput
   recipient?: Prisma.RecipientOrderByWithRelationInput
+  emailJob?: Prisma.EmailJobOrderByWithRelationInput
 }
 
 export type GeneratedDraftWhereUniqueInput = Prisma.AtLeast<{
@@ -414,6 +416,7 @@ export type GeneratedDraftWhereUniqueInput = Prisma.AtLeast<{
   updatedAt?: Prisma.DateTimeFilter<"GeneratedDraft"> | Date | string
   campaign?: Prisma.XOR<Prisma.CampaignScalarRelationFilter, Prisma.CampaignWhereInput>
   recipient?: Prisma.XOR<Prisma.RecipientScalarRelationFilter, Prisma.RecipientWhereInput>
+  emailJob?: Prisma.XOR<Prisma.EmailJobNullableScalarRelationFilter, Prisma.EmailJobWhereInput> | null
 }, "id" | "emailJobId">
 
 export type GeneratedDraftOrderByWithAggregationInput = {
@@ -474,7 +477,6 @@ export type GeneratedDraftScalarWhereWithAggregatesInput = {
 
 export type GeneratedDraftCreateInput = {
   id: string
-  emailJobId?: string | null
   aiIntro?: string | null
   subject: string
   body: string
@@ -494,6 +496,7 @@ export type GeneratedDraftCreateInput = {
   updatedAt?: Date | string
   campaign: Prisma.CampaignCreateNestedOneWithoutDraftsInput
   recipient: Prisma.RecipientCreateNestedOneWithoutDraftsInput
+  emailJob?: Prisma.EmailJobCreateNestedOneWithoutGeneratedDraftInput
 }
 
 export type GeneratedDraftUncheckedCreateInput = {
@@ -522,7 +525,6 @@ export type GeneratedDraftUncheckedCreateInput = {
 
 export type GeneratedDraftUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  emailJobId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   aiIntro?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   subject?: Prisma.StringFieldUpdateOperationsInput | string
   body?: Prisma.StringFieldUpdateOperationsInput | string
@@ -542,6 +544,7 @@ export type GeneratedDraftUpdateInput = {
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   campaign?: Prisma.CampaignUpdateOneRequiredWithoutDraftsNestedInput
   recipient?: Prisma.RecipientUpdateOneRequiredWithoutDraftsNestedInput
+  emailJob?: Prisma.EmailJobUpdateOneWithoutGeneratedDraftNestedInput
 }
 
 export type GeneratedDraftUncheckedUpdateInput = {
@@ -594,7 +597,6 @@ export type GeneratedDraftCreateManyInput = {
 
 export type GeneratedDraftUpdateManyMutationInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  emailJobId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   aiIntro?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   subject?: Prisma.StringFieldUpdateOperationsInput | string
   body?: Prisma.StringFieldUpdateOperationsInput | string
@@ -636,6 +638,11 @@ export type GeneratedDraftUncheckedUpdateManyInput = {
   rateLimitHits?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+export type GeneratedDraftNullableScalarRelationFilter = {
+  is?: Prisma.GeneratedDraftWhereInput | null
+  isNot?: Prisma.GeneratedDraftWhereInput | null
 }
 
 export type GeneratedDraftListRelationFilter = {
@@ -732,6 +739,38 @@ export type GeneratedDraftSumOrderByAggregateInput = {
   latencyMs?: Prisma.SortOrder
   attempts?: Prisma.SortOrder
   rateLimitHits?: Prisma.SortOrder
+}
+
+export type GeneratedDraftCreateNestedOneWithoutEmailJobInput = {
+  create?: Prisma.XOR<Prisma.GeneratedDraftCreateWithoutEmailJobInput, Prisma.GeneratedDraftUncheckedCreateWithoutEmailJobInput>
+  connectOrCreate?: Prisma.GeneratedDraftCreateOrConnectWithoutEmailJobInput
+  connect?: Prisma.GeneratedDraftWhereUniqueInput
+}
+
+export type GeneratedDraftUncheckedCreateNestedOneWithoutEmailJobInput = {
+  create?: Prisma.XOR<Prisma.GeneratedDraftCreateWithoutEmailJobInput, Prisma.GeneratedDraftUncheckedCreateWithoutEmailJobInput>
+  connectOrCreate?: Prisma.GeneratedDraftCreateOrConnectWithoutEmailJobInput
+  connect?: Prisma.GeneratedDraftWhereUniqueInput
+}
+
+export type GeneratedDraftUpdateOneWithoutEmailJobNestedInput = {
+  create?: Prisma.XOR<Prisma.GeneratedDraftCreateWithoutEmailJobInput, Prisma.GeneratedDraftUncheckedCreateWithoutEmailJobInput>
+  connectOrCreate?: Prisma.GeneratedDraftCreateOrConnectWithoutEmailJobInput
+  upsert?: Prisma.GeneratedDraftUpsertWithoutEmailJobInput
+  disconnect?: Prisma.GeneratedDraftWhereInput | boolean
+  delete?: Prisma.GeneratedDraftWhereInput | boolean
+  connect?: Prisma.GeneratedDraftWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.GeneratedDraftUpdateToOneWithWhereWithoutEmailJobInput, Prisma.GeneratedDraftUpdateWithoutEmailJobInput>, Prisma.GeneratedDraftUncheckedUpdateWithoutEmailJobInput>
+}
+
+export type GeneratedDraftUncheckedUpdateOneWithoutEmailJobNestedInput = {
+  create?: Prisma.XOR<Prisma.GeneratedDraftCreateWithoutEmailJobInput, Prisma.GeneratedDraftUncheckedCreateWithoutEmailJobInput>
+  connectOrCreate?: Prisma.GeneratedDraftCreateOrConnectWithoutEmailJobInput
+  upsert?: Prisma.GeneratedDraftUpsertWithoutEmailJobInput
+  disconnect?: Prisma.GeneratedDraftWhereInput | boolean
+  delete?: Prisma.GeneratedDraftWhereInput | boolean
+  connect?: Prisma.GeneratedDraftWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.GeneratedDraftUpdateToOneWithWhereWithoutEmailJobInput, Prisma.GeneratedDraftUpdateWithoutEmailJobInput>, Prisma.GeneratedDraftUncheckedUpdateWithoutEmailJobInput>
 }
 
 export type GeneratedDraftCreateNestedManyWithoutCampaignInput = {
@@ -838,9 +877,116 @@ export type IntFieldUpdateOperationsInput = {
   divide?: number
 }
 
+export type GeneratedDraftCreateWithoutEmailJobInput = {
+  id: string
+  aiIntro?: string | null
+  subject: string
+  body: string
+  status?: $Enums.DraftStatus
+  flagReasons?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  fallbackReason?: string | null
+  isSample?: boolean
+  resolvedBy?: string | null
+  model?: string | null
+  promptVersion: string
+  tokensIn?: number | null
+  tokensOut?: number | null
+  latencyMs?: number | null
+  attempts?: number
+  rateLimitHits?: number
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  campaign: Prisma.CampaignCreateNestedOneWithoutDraftsInput
+  recipient: Prisma.RecipientCreateNestedOneWithoutDraftsInput
+}
+
+export type GeneratedDraftUncheckedCreateWithoutEmailJobInput = {
+  id: string
+  campaignId: string
+  recipientId: string
+  aiIntro?: string | null
+  subject: string
+  body: string
+  status?: $Enums.DraftStatus
+  flagReasons?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  fallbackReason?: string | null
+  isSample?: boolean
+  resolvedBy?: string | null
+  model?: string | null
+  promptVersion: string
+  tokensIn?: number | null
+  tokensOut?: number | null
+  latencyMs?: number | null
+  attempts?: number
+  rateLimitHits?: number
+  createdAt?: Date | string
+  updatedAt?: Date | string
+}
+
+export type GeneratedDraftCreateOrConnectWithoutEmailJobInput = {
+  where: Prisma.GeneratedDraftWhereUniqueInput
+  create: Prisma.XOR<Prisma.GeneratedDraftCreateWithoutEmailJobInput, Prisma.GeneratedDraftUncheckedCreateWithoutEmailJobInput>
+}
+
+export type GeneratedDraftUpsertWithoutEmailJobInput = {
+  update: Prisma.XOR<Prisma.GeneratedDraftUpdateWithoutEmailJobInput, Prisma.GeneratedDraftUncheckedUpdateWithoutEmailJobInput>
+  create: Prisma.XOR<Prisma.GeneratedDraftCreateWithoutEmailJobInput, Prisma.GeneratedDraftUncheckedCreateWithoutEmailJobInput>
+  where?: Prisma.GeneratedDraftWhereInput
+}
+
+export type GeneratedDraftUpdateToOneWithWhereWithoutEmailJobInput = {
+  where?: Prisma.GeneratedDraftWhereInput
+  data: Prisma.XOR<Prisma.GeneratedDraftUpdateWithoutEmailJobInput, Prisma.GeneratedDraftUncheckedUpdateWithoutEmailJobInput>
+}
+
+export type GeneratedDraftUpdateWithoutEmailJobInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  aiIntro?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  subject?: Prisma.StringFieldUpdateOperationsInput | string
+  body?: Prisma.StringFieldUpdateOperationsInput | string
+  status?: Prisma.EnumDraftStatusFieldUpdateOperationsInput | $Enums.DraftStatus
+  flagReasons?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  fallbackReason?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  isSample?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  resolvedBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  model?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptVersion?: Prisma.StringFieldUpdateOperationsInput | string
+  tokensIn?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  tokensOut?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  latencyMs?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  attempts?: Prisma.IntFieldUpdateOperationsInput | number
+  rateLimitHits?: Prisma.IntFieldUpdateOperationsInput | number
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  campaign?: Prisma.CampaignUpdateOneRequiredWithoutDraftsNestedInput
+  recipient?: Prisma.RecipientUpdateOneRequiredWithoutDraftsNestedInput
+}
+
+export type GeneratedDraftUncheckedUpdateWithoutEmailJobInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  campaignId?: Prisma.StringFieldUpdateOperationsInput | string
+  recipientId?: Prisma.StringFieldUpdateOperationsInput | string
+  aiIntro?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  subject?: Prisma.StringFieldUpdateOperationsInput | string
+  body?: Prisma.StringFieldUpdateOperationsInput | string
+  status?: Prisma.EnumDraftStatusFieldUpdateOperationsInput | $Enums.DraftStatus
+  flagReasons?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  fallbackReason?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  isSample?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  resolvedBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  model?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptVersion?: Prisma.StringFieldUpdateOperationsInput | string
+  tokensIn?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  tokensOut?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  latencyMs?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  attempts?: Prisma.IntFieldUpdateOperationsInput | number
+  rateLimitHits?: Prisma.IntFieldUpdateOperationsInput | number
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
 export type GeneratedDraftCreateWithoutCampaignInput = {
   id: string
-  emailJobId?: string | null
   aiIntro?: string | null
   subject: string
   body: string
@@ -859,6 +1005,7 @@ export type GeneratedDraftCreateWithoutCampaignInput = {
   createdAt?: Date | string
   updatedAt?: Date | string
   recipient: Prisma.RecipientCreateNestedOneWithoutDraftsInput
+  emailJob?: Prisma.EmailJobCreateNestedOneWithoutGeneratedDraftInput
 }
 
 export type GeneratedDraftUncheckedCreateWithoutCampaignInput = {
@@ -939,7 +1086,6 @@ export type GeneratedDraftScalarWhereInput = {
 
 export type GeneratedDraftCreateWithoutRecipientInput = {
   id: string
-  emailJobId?: string | null
   aiIntro?: string | null
   subject: string
   body: string
@@ -958,6 +1104,7 @@ export type GeneratedDraftCreateWithoutRecipientInput = {
   createdAt?: Date | string
   updatedAt?: Date | string
   campaign: Prisma.CampaignCreateNestedOneWithoutDraftsInput
+  emailJob?: Prisma.EmailJobCreateNestedOneWithoutGeneratedDraftInput
 }
 
 export type GeneratedDraftUncheckedCreateWithoutRecipientInput = {
@@ -1034,7 +1181,6 @@ export type GeneratedDraftCreateManyCampaignInput = {
 
 export type GeneratedDraftUpdateWithoutCampaignInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  emailJobId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   aiIntro?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   subject?: Prisma.StringFieldUpdateOperationsInput | string
   body?: Prisma.StringFieldUpdateOperationsInput | string
@@ -1053,6 +1199,7 @@ export type GeneratedDraftUpdateWithoutCampaignInput = {
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   recipient?: Prisma.RecipientUpdateOneRequiredWithoutDraftsNestedInput
+  emailJob?: Prisma.EmailJobUpdateOneWithoutGeneratedDraftNestedInput
 }
 
 export type GeneratedDraftUncheckedUpdateWithoutCampaignInput = {
@@ -1126,7 +1273,6 @@ export type GeneratedDraftCreateManyRecipientInput = {
 
 export type GeneratedDraftUpdateWithoutRecipientInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  emailJobId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   aiIntro?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   subject?: Prisma.StringFieldUpdateOperationsInput | string
   body?: Prisma.StringFieldUpdateOperationsInput | string
@@ -1145,6 +1291,7 @@ export type GeneratedDraftUpdateWithoutRecipientInput = {
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   campaign?: Prisma.CampaignUpdateOneRequiredWithoutDraftsNestedInput
+  emailJob?: Prisma.EmailJobUpdateOneWithoutGeneratedDraftNestedInput
 }
 
 export type GeneratedDraftUncheckedUpdateWithoutRecipientInput = {
@@ -1219,6 +1366,7 @@ export type GeneratedDraftSelect<ExtArgs extends runtime.Types.Extensions.Intern
   updatedAt?: boolean
   campaign?: boolean | Prisma.CampaignDefaultArgs<ExtArgs>
   recipient?: boolean | Prisma.RecipientDefaultArgs<ExtArgs>
+  emailJob?: boolean | Prisma.GeneratedDraft$emailJobArgs<ExtArgs>
 }, ExtArgs["result"]["generatedDraft"]>
 
 export type GeneratedDraftSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -1245,6 +1393,7 @@ export type GeneratedDraftSelectCreateManyAndReturn<ExtArgs extends runtime.Type
   updatedAt?: boolean
   campaign?: boolean | Prisma.CampaignDefaultArgs<ExtArgs>
   recipient?: boolean | Prisma.RecipientDefaultArgs<ExtArgs>
+  emailJob?: boolean | Prisma.GeneratedDraft$emailJobArgs<ExtArgs>
 }, ExtArgs["result"]["generatedDraft"]>
 
 export type GeneratedDraftSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -1271,6 +1420,7 @@ export type GeneratedDraftSelectUpdateManyAndReturn<ExtArgs extends runtime.Type
   updatedAt?: boolean
   campaign?: boolean | Prisma.CampaignDefaultArgs<ExtArgs>
   recipient?: boolean | Prisma.RecipientDefaultArgs<ExtArgs>
+  emailJob?: boolean | Prisma.GeneratedDraft$emailJobArgs<ExtArgs>
 }, ExtArgs["result"]["generatedDraft"]>
 
 export type GeneratedDraftSelectScalar = {
@@ -1301,14 +1451,17 @@ export type GeneratedDraftOmit<ExtArgs extends runtime.Types.Extensions.Internal
 export type GeneratedDraftInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   campaign?: boolean | Prisma.CampaignDefaultArgs<ExtArgs>
   recipient?: boolean | Prisma.RecipientDefaultArgs<ExtArgs>
+  emailJob?: boolean | Prisma.GeneratedDraft$emailJobArgs<ExtArgs>
 }
 export type GeneratedDraftIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   campaign?: boolean | Prisma.CampaignDefaultArgs<ExtArgs>
   recipient?: boolean | Prisma.RecipientDefaultArgs<ExtArgs>
+  emailJob?: boolean | Prisma.GeneratedDraft$emailJobArgs<ExtArgs>
 }
 export type GeneratedDraftIncludeUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   campaign?: boolean | Prisma.CampaignDefaultArgs<ExtArgs>
   recipient?: boolean | Prisma.RecipientDefaultArgs<ExtArgs>
+  emailJob?: boolean | Prisma.GeneratedDraft$emailJobArgs<ExtArgs>
 }
 
 export type $GeneratedDraftPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -1316,6 +1469,7 @@ export type $GeneratedDraftPayload<ExtArgs extends runtime.Types.Extensions.Inte
   objects: {
     campaign: Prisma.$CampaignPayload<ExtArgs>
     recipient: Prisma.$RecipientPayload<ExtArgs>
+    emailJob: Prisma.$EmailJobPayload<ExtArgs> | null
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
@@ -1735,6 +1889,7 @@ export interface Prisma__GeneratedDraftClient<T, Null = never, ExtArgs extends r
   readonly [Symbol.toStringTag]: "PrismaPromise"
   campaign<T extends Prisma.CampaignDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.CampaignDefaultArgs<ExtArgs>>): Prisma.Prisma__CampaignClient<runtime.Types.Result.GetResult<Prisma.$CampaignPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
   recipient<T extends Prisma.RecipientDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.RecipientDefaultArgs<ExtArgs>>): Prisma.Prisma__RecipientClient<runtime.Types.Result.GetResult<Prisma.$RecipientPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
+  emailJob<T extends Prisma.GeneratedDraft$emailJobArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.GeneratedDraft$emailJobArgs<ExtArgs>>): Prisma.Prisma__EmailJobClient<runtime.Types.Result.GetResult<Prisma.$EmailJobPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -2183,6 +2338,25 @@ export type GeneratedDraftDeleteManyArgs<ExtArgs extends runtime.Types.Extension
    * Limit how many GeneratedDrafts to delete.
    */
   limit?: number
+}
+
+/**
+ * GeneratedDraft.emailJob
+ */
+export type GeneratedDraft$emailJobArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the EmailJob
+   */
+  select?: Prisma.EmailJobSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the EmailJob
+   */
+  omit?: Prisma.EmailJobOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.EmailJobInclude<ExtArgs> | null
+  where?: Prisma.EmailJobWhereInput
 }
 
 /**

@@ -37,6 +37,9 @@ export type CampaignMinAggregateOutputType = {
   unsubscribeUrl: string | null
   aiEnabled: boolean | null
   aiInstruction: string | null
+  promptFingerprint: string | null
+  llmModel: string | null
+  promptTemplateVersion: string | null
   approvedPromptVersion: string | null
   reviewMode: $Enums.ReviewMode | null
   onUnresolved: $Enums.UnresolvedPolicy | null
@@ -58,6 +61,9 @@ export type CampaignMaxAggregateOutputType = {
   unsubscribeUrl: string | null
   aiEnabled: boolean | null
   aiInstruction: string | null
+  promptFingerprint: string | null
+  llmModel: string | null
+  promptTemplateVersion: string | null
   approvedPromptVersion: string | null
   reviewMode: $Enums.ReviewMode | null
   onUnresolved: $Enums.UnresolvedPolicy | null
@@ -79,6 +85,9 @@ export type CampaignCountAggregateOutputType = {
   unsubscribeUrl: number
   aiEnabled: number
   aiInstruction: number
+  promptFingerprint: number
+  llmModel: number
+  promptTemplateVersion: number
   approvedPromptVersion: number
   reviewMode: number
   onUnresolved: number
@@ -102,6 +111,9 @@ export type CampaignMinAggregateInputType = {
   unsubscribeUrl?: true
   aiEnabled?: true
   aiInstruction?: true
+  promptFingerprint?: true
+  llmModel?: true
+  promptTemplateVersion?: true
   approvedPromptVersion?: true
   reviewMode?: true
   onUnresolved?: true
@@ -123,6 +135,9 @@ export type CampaignMaxAggregateInputType = {
   unsubscribeUrl?: true
   aiEnabled?: true
   aiInstruction?: true
+  promptFingerprint?: true
+  llmModel?: true
+  promptTemplateVersion?: true
   approvedPromptVersion?: true
   reviewMode?: true
   onUnresolved?: true
@@ -144,6 +159,9 @@ export type CampaignCountAggregateInputType = {
   unsubscribeUrl?: true
   aiEnabled?: true
   aiInstruction?: true
+  promptFingerprint?: true
+  llmModel?: true
+  promptTemplateVersion?: true
   approvedPromptVersion?: true
   reviewMode?: true
   onUnresolved?: true
@@ -238,6 +256,9 @@ export type CampaignGroupByOutputType = {
   unsubscribeUrl: string
   aiEnabled: boolean
   aiInstruction: string | null
+  promptFingerprint: string | null
+  llmModel: string | null
+  promptTemplateVersion: string | null
   approvedPromptVersion: string | null
   reviewMode: $Enums.ReviewMode
   onUnresolved: $Enums.UnresolvedPolicy
@@ -280,6 +301,9 @@ export type CampaignWhereInput = {
   unsubscribeUrl?: Prisma.StringFilter<"Campaign"> | string
   aiEnabled?: Prisma.BoolFilter<"Campaign"> | boolean
   aiInstruction?: Prisma.StringNullableFilter<"Campaign"> | string | null
+  promptFingerprint?: Prisma.StringNullableFilter<"Campaign"> | string | null
+  llmModel?: Prisma.StringNullableFilter<"Campaign"> | string | null
+  promptTemplateVersion?: Prisma.StringNullableFilter<"Campaign"> | string | null
   approvedPromptVersion?: Prisma.StringNullableFilter<"Campaign"> | string | null
   reviewMode?: Prisma.EnumReviewModeFilter<"Campaign"> | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFilter<"Campaign"> | $Enums.UnresolvedPolicy
@@ -303,6 +327,9 @@ export type CampaignOrderByWithRelationInput = {
   unsubscribeUrl?: Prisma.SortOrder
   aiEnabled?: Prisma.SortOrder
   aiInstruction?: Prisma.SortOrderInput | Prisma.SortOrder
+  promptFingerprint?: Prisma.SortOrderInput | Prisma.SortOrder
+  llmModel?: Prisma.SortOrderInput | Prisma.SortOrder
+  promptTemplateVersion?: Prisma.SortOrderInput | Prisma.SortOrder
   approvedPromptVersion?: Prisma.SortOrderInput | Prisma.SortOrder
   reviewMode?: Prisma.SortOrder
   onUnresolved?: Prisma.SortOrder
@@ -329,6 +356,9 @@ export type CampaignWhereUniqueInput = Prisma.AtLeast<{
   unsubscribeUrl?: Prisma.StringFilter<"Campaign"> | string
   aiEnabled?: Prisma.BoolFilter<"Campaign"> | boolean
   aiInstruction?: Prisma.StringNullableFilter<"Campaign"> | string | null
+  promptFingerprint?: Prisma.StringNullableFilter<"Campaign"> | string | null
+  llmModel?: Prisma.StringNullableFilter<"Campaign"> | string | null
+  promptTemplateVersion?: Prisma.StringNullableFilter<"Campaign"> | string | null
   approvedPromptVersion?: Prisma.StringNullableFilter<"Campaign"> | string | null
   reviewMode?: Prisma.EnumReviewModeFilter<"Campaign"> | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFilter<"Campaign"> | $Enums.UnresolvedPolicy
@@ -352,6 +382,9 @@ export type CampaignOrderByWithAggregationInput = {
   unsubscribeUrl?: Prisma.SortOrder
   aiEnabled?: Prisma.SortOrder
   aiInstruction?: Prisma.SortOrderInput | Prisma.SortOrder
+  promptFingerprint?: Prisma.SortOrderInput | Prisma.SortOrder
+  llmModel?: Prisma.SortOrderInput | Prisma.SortOrder
+  promptTemplateVersion?: Prisma.SortOrderInput | Prisma.SortOrder
   approvedPromptVersion?: Prisma.SortOrderInput | Prisma.SortOrder
   reviewMode?: Prisma.SortOrder
   onUnresolved?: Prisma.SortOrder
@@ -379,6 +412,9 @@ export type CampaignScalarWhereWithAggregatesInput = {
   unsubscribeUrl?: Prisma.StringWithAggregatesFilter<"Campaign"> | string
   aiEnabled?: Prisma.BoolWithAggregatesFilter<"Campaign"> | boolean
   aiInstruction?: Prisma.StringNullableWithAggregatesFilter<"Campaign"> | string | null
+  promptFingerprint?: Prisma.StringNullableWithAggregatesFilter<"Campaign"> | string | null
+  llmModel?: Prisma.StringNullableWithAggregatesFilter<"Campaign"> | string | null
+  promptTemplateVersion?: Prisma.StringNullableWithAggregatesFilter<"Campaign"> | string | null
   approvedPromptVersion?: Prisma.StringNullableWithAggregatesFilter<"Campaign"> | string | null
   reviewMode?: Prisma.EnumReviewModeWithAggregatesFilter<"Campaign"> | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyWithAggregatesFilter<"Campaign"> | $Enums.UnresolvedPolicy
@@ -400,6 +436,9 @@ export type CampaignCreateInput = {
   unsubscribeUrl: string
   aiEnabled?: boolean
   aiInstruction?: string | null
+  promptFingerprint?: string | null
+  llmModel?: string | null
+  promptTemplateVersion?: string | null
   approvedPromptVersion?: string | null
   reviewMode?: $Enums.ReviewMode
   onUnresolved?: $Enums.UnresolvedPolicy
@@ -423,6 +462,9 @@ export type CampaignUncheckedCreateInput = {
   unsubscribeUrl: string
   aiEnabled?: boolean
   aiInstruction?: string | null
+  promptFingerprint?: string | null
+  llmModel?: string | null
+  promptTemplateVersion?: string | null
   approvedPromptVersion?: string | null
   reviewMode?: $Enums.ReviewMode
   onUnresolved?: $Enums.UnresolvedPolicy
@@ -446,6 +488,9 @@ export type CampaignUpdateInput = {
   unsubscribeUrl?: Prisma.StringFieldUpdateOperationsInput | string
   aiEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   aiInstruction?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptFingerprint?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  llmModel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptTemplateVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   approvedPromptVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reviewMode?: Prisma.EnumReviewModeFieldUpdateOperationsInput | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFieldUpdateOperationsInput | $Enums.UnresolvedPolicy
@@ -469,6 +514,9 @@ export type CampaignUncheckedUpdateInput = {
   unsubscribeUrl?: Prisma.StringFieldUpdateOperationsInput | string
   aiEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   aiInstruction?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptFingerprint?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  llmModel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptTemplateVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   approvedPromptVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reviewMode?: Prisma.EnumReviewModeFieldUpdateOperationsInput | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFieldUpdateOperationsInput | $Enums.UnresolvedPolicy
@@ -492,6 +540,9 @@ export type CampaignCreateManyInput = {
   unsubscribeUrl: string
   aiEnabled?: boolean
   aiInstruction?: string | null
+  promptFingerprint?: string | null
+  llmModel?: string | null
+  promptTemplateVersion?: string | null
   approvedPromptVersion?: string | null
   reviewMode?: $Enums.ReviewMode
   onUnresolved?: $Enums.UnresolvedPolicy
@@ -513,6 +564,9 @@ export type CampaignUpdateManyMutationInput = {
   unsubscribeUrl?: Prisma.StringFieldUpdateOperationsInput | string
   aiEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   aiInstruction?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptFingerprint?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  llmModel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptTemplateVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   approvedPromptVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reviewMode?: Prisma.EnumReviewModeFieldUpdateOperationsInput | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFieldUpdateOperationsInput | $Enums.UnresolvedPolicy
@@ -534,6 +588,9 @@ export type CampaignUncheckedUpdateManyInput = {
   unsubscribeUrl?: Prisma.StringFieldUpdateOperationsInput | string
   aiEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   aiInstruction?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptFingerprint?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  llmModel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptTemplateVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   approvedPromptVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reviewMode?: Prisma.EnumReviewModeFieldUpdateOperationsInput | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFieldUpdateOperationsInput | $Enums.UnresolvedPolicy
@@ -555,6 +612,9 @@ export type CampaignCountOrderByAggregateInput = {
   unsubscribeUrl?: Prisma.SortOrder
   aiEnabled?: Prisma.SortOrder
   aiInstruction?: Prisma.SortOrder
+  promptFingerprint?: Prisma.SortOrder
+  llmModel?: Prisma.SortOrder
+  promptTemplateVersion?: Prisma.SortOrder
   approvedPromptVersion?: Prisma.SortOrder
   reviewMode?: Prisma.SortOrder
   onUnresolved?: Prisma.SortOrder
@@ -576,6 +636,9 @@ export type CampaignMaxOrderByAggregateInput = {
   unsubscribeUrl?: Prisma.SortOrder
   aiEnabled?: Prisma.SortOrder
   aiInstruction?: Prisma.SortOrder
+  promptFingerprint?: Prisma.SortOrder
+  llmModel?: Prisma.SortOrder
+  promptTemplateVersion?: Prisma.SortOrder
   approvedPromptVersion?: Prisma.SortOrder
   reviewMode?: Prisma.SortOrder
   onUnresolved?: Prisma.SortOrder
@@ -597,6 +660,9 @@ export type CampaignMinOrderByAggregateInput = {
   unsubscribeUrl?: Prisma.SortOrder
   aiEnabled?: Prisma.SortOrder
   aiInstruction?: Prisma.SortOrder
+  promptFingerprint?: Prisma.SortOrder
+  llmModel?: Prisma.SortOrder
+  promptTemplateVersion?: Prisma.SortOrder
   approvedPromptVersion?: Prisma.SortOrder
   reviewMode?: Prisma.SortOrder
   onUnresolved?: Prisma.SortOrder
@@ -667,6 +733,9 @@ export type CampaignCreateWithoutRecipientsInput = {
   unsubscribeUrl: string
   aiEnabled?: boolean
   aiInstruction?: string | null
+  promptFingerprint?: string | null
+  llmModel?: string | null
+  promptTemplateVersion?: string | null
   approvedPromptVersion?: string | null
   reviewMode?: $Enums.ReviewMode
   onUnresolved?: $Enums.UnresolvedPolicy
@@ -689,6 +758,9 @@ export type CampaignUncheckedCreateWithoutRecipientsInput = {
   unsubscribeUrl: string
   aiEnabled?: boolean
   aiInstruction?: string | null
+  promptFingerprint?: string | null
+  llmModel?: string | null
+  promptTemplateVersion?: string | null
   approvedPromptVersion?: string | null
   reviewMode?: $Enums.ReviewMode
   onUnresolved?: $Enums.UnresolvedPolicy
@@ -727,6 +799,9 @@ export type CampaignUpdateWithoutRecipientsInput = {
   unsubscribeUrl?: Prisma.StringFieldUpdateOperationsInput | string
   aiEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   aiInstruction?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptFingerprint?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  llmModel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptTemplateVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   approvedPromptVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reviewMode?: Prisma.EnumReviewModeFieldUpdateOperationsInput | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFieldUpdateOperationsInput | $Enums.UnresolvedPolicy
@@ -749,6 +824,9 @@ export type CampaignUncheckedUpdateWithoutRecipientsInput = {
   unsubscribeUrl?: Prisma.StringFieldUpdateOperationsInput | string
   aiEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   aiInstruction?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptFingerprint?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  llmModel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptTemplateVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   approvedPromptVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reviewMode?: Prisma.EnumReviewModeFieldUpdateOperationsInput | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFieldUpdateOperationsInput | $Enums.UnresolvedPolicy
@@ -771,6 +849,9 @@ export type CampaignCreateWithoutDraftsInput = {
   unsubscribeUrl: string
   aiEnabled?: boolean
   aiInstruction?: string | null
+  promptFingerprint?: string | null
+  llmModel?: string | null
+  promptTemplateVersion?: string | null
   approvedPromptVersion?: string | null
   reviewMode?: $Enums.ReviewMode
   onUnresolved?: $Enums.UnresolvedPolicy
@@ -793,6 +874,9 @@ export type CampaignUncheckedCreateWithoutDraftsInput = {
   unsubscribeUrl: string
   aiEnabled?: boolean
   aiInstruction?: string | null
+  promptFingerprint?: string | null
+  llmModel?: string | null
+  promptTemplateVersion?: string | null
   approvedPromptVersion?: string | null
   reviewMode?: $Enums.ReviewMode
   onUnresolved?: $Enums.UnresolvedPolicy
@@ -831,6 +915,9 @@ export type CampaignUpdateWithoutDraftsInput = {
   unsubscribeUrl?: Prisma.StringFieldUpdateOperationsInput | string
   aiEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   aiInstruction?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptFingerprint?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  llmModel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptTemplateVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   approvedPromptVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reviewMode?: Prisma.EnumReviewModeFieldUpdateOperationsInput | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFieldUpdateOperationsInput | $Enums.UnresolvedPolicy
@@ -853,6 +940,9 @@ export type CampaignUncheckedUpdateWithoutDraftsInput = {
   unsubscribeUrl?: Prisma.StringFieldUpdateOperationsInput | string
   aiEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   aiInstruction?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptFingerprint?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  llmModel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  promptTemplateVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   approvedPromptVersion?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   reviewMode?: Prisma.EnumReviewModeFieldUpdateOperationsInput | $Enums.ReviewMode
   onUnresolved?: Prisma.EnumUnresolvedPolicyFieldUpdateOperationsInput | $Enums.UnresolvedPolicy
@@ -915,6 +1005,9 @@ export type CampaignSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs
   unsubscribeUrl?: boolean
   aiEnabled?: boolean
   aiInstruction?: boolean
+  promptFingerprint?: boolean
+  llmModel?: boolean
+  promptTemplateVersion?: boolean
   approvedPromptVersion?: boolean
   reviewMode?: boolean
   onUnresolved?: boolean
@@ -939,6 +1032,9 @@ export type CampaignSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exte
   unsubscribeUrl?: boolean
   aiEnabled?: boolean
   aiInstruction?: boolean
+  promptFingerprint?: boolean
+  llmModel?: boolean
+  promptTemplateVersion?: boolean
   approvedPromptVersion?: boolean
   reviewMode?: boolean
   onUnresolved?: boolean
@@ -960,6 +1056,9 @@ export type CampaignSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exte
   unsubscribeUrl?: boolean
   aiEnabled?: boolean
   aiInstruction?: boolean
+  promptFingerprint?: boolean
+  llmModel?: boolean
+  promptTemplateVersion?: boolean
   approvedPromptVersion?: boolean
   reviewMode?: boolean
   onUnresolved?: boolean
@@ -981,6 +1080,9 @@ export type CampaignSelectScalar = {
   unsubscribeUrl?: boolean
   aiEnabled?: boolean
   aiInstruction?: boolean
+  promptFingerprint?: boolean
+  llmModel?: boolean
+  promptTemplateVersion?: boolean
   approvedPromptVersion?: boolean
   reviewMode?: boolean
   onUnresolved?: boolean
@@ -991,7 +1093,7 @@ export type CampaignSelectScalar = {
   updatedAt?: boolean
 }
 
-export type CampaignOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "userId" | "name" | "subjectTemplate" | "bodyTemplate" | "templateHash" | "linkUrl" | "unsubscribeUrl" | "aiEnabled" | "aiInstruction" | "approvedPromptVersion" | "reviewMode" | "onUnresolved" | "scheduledAt" | "status" | "errorMessage" | "createdAt" | "updatedAt", ExtArgs["result"]["campaign"]>
+export type CampaignOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "userId" | "name" | "subjectTemplate" | "bodyTemplate" | "templateHash" | "linkUrl" | "unsubscribeUrl" | "aiEnabled" | "aiInstruction" | "promptFingerprint" | "llmModel" | "promptTemplateVersion" | "approvedPromptVersion" | "reviewMode" | "onUnresolved" | "scheduledAt" | "status" | "errorMessage" | "createdAt" | "updatedAt", ExtArgs["result"]["campaign"]>
 export type CampaignInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   recipients?: boolean | Prisma.Campaign$recipientsArgs<ExtArgs>
   drafts?: boolean | Prisma.Campaign$draftsArgs<ExtArgs>
@@ -1017,6 +1119,9 @@ export type $CampaignPayload<ExtArgs extends runtime.Types.Extensions.InternalAr
     unsubscribeUrl: string
     aiEnabled: boolean
     aiInstruction: string | null
+    promptFingerprint: string | null
+    llmModel: string | null
+    promptTemplateVersion: string | null
     approvedPromptVersion: string | null
     reviewMode: $Enums.ReviewMode
     onUnresolved: $Enums.UnresolvedPolicy
@@ -1460,6 +1565,9 @@ export interface CampaignFieldRefs {
   readonly unsubscribeUrl: Prisma.FieldRef<"Campaign", 'String'>
   readonly aiEnabled: Prisma.FieldRef<"Campaign", 'Boolean'>
   readonly aiInstruction: Prisma.FieldRef<"Campaign", 'String'>
+  readonly promptFingerprint: Prisma.FieldRef<"Campaign", 'String'>
+  readonly llmModel: Prisma.FieldRef<"Campaign", 'String'>
+  readonly promptTemplateVersion: Prisma.FieldRef<"Campaign", 'String'>
   readonly approvedPromptVersion: Prisma.FieldRef<"Campaign", 'String'>
   readonly reviewMode: Prisma.FieldRef<"Campaign", 'ReviewMode'>
   readonly onUnresolved: Prisma.FieldRef<"Campaign", 'UnresolvedPolicy'>

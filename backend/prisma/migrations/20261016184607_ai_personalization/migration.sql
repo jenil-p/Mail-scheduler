@@ -8,7 +8,7 @@ CREATE TYPE "ReviewMode" AS ENUM ('SAMPLE', 'FULL');
 CREATE TYPE "UnresolvedPolicy" AS ENUM ('FALLBACK_TO_PLAIN', 'HOLD');
 
 -- CreateEnum
-CREATE TYPE "DraftStatus" AS ENUM ('PENDING', 'GENERATING', 'READY', 'FLAGGED', 'FALLBACK', 'APPROVED', 'HELD', 'SENT');
+CREATE TYPE "DraftStatus" AS ENUM ('PENDING', 'GENERATING', 'READY', 'FLAGGED', 'FALLBACK', 'APPROVED', 'HELD', 'QUEUED');
 
 -- CreateTable
 CREATE TABLE "campaigns" (
@@ -22,6 +22,9 @@ CREATE TABLE "campaigns" (
     "unsubscribe_url" TEXT NOT NULL,
     "ai_enabled" BOOLEAN NOT NULL DEFAULT false,
     "ai_instruction" TEXT,
+    "prompt_fingerprint" TEXT,
+    "llm_model" TEXT,
+    "prompt_template_version" TEXT,
     "approved_prompt_version" TEXT,
     "review_mode" "ReviewMode" NOT NULL DEFAULT 'SAMPLE',
     "on_unresolved" "UnresolvedPolicy" NOT NULL DEFAULT 'FALLBACK_TO_PLAIN',
@@ -87,10 +90,7 @@ CREATE UNIQUE INDEX "campaign_recipients_campaign_id_email_key" ON "campaign_rec
 CREATE UNIQUE INDEX "generated_drafts_email_job_id_key" ON "generated_drafts"("email_job_id");
 
 -- CreateIndex
-CREATE INDEX "generated_drafts_campaign_id_status_idx" ON "generated_drafts"("campaign_id", "status");
-
--- CreateIndex
-CREATE INDEX "generated_drafts_campaign_id_is_sample_idx" ON "generated_drafts"("campaign_id", "is_sample");
+CREATE INDEX "generated_drafts_campaign_id_prompt_version_status_idx" ON "generated_drafts"("campaign_id", "prompt_version", "status");
 
 -- AddForeignKey
 ALTER TABLE "campaign_recipients" ADD CONSTRAINT "campaign_recipients_campaign_id_fkey" FOREIGN KEY ("campaign_id") REFERENCES "campaigns"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -100,4 +100,7 @@ ALTER TABLE "generated_drafts" ADD CONSTRAINT "generated_drafts_campaign_id_fkey
 
 -- AddForeignKey
 ALTER TABLE "generated_drafts" ADD CONSTRAINT "generated_drafts_recipient_id_fkey" FOREIGN KEY ("recipient_id") REFERENCES "campaign_recipients"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "generated_drafts" ADD CONSTRAINT "generated_drafts_email_job_id_fkey" FOREIGN KEY ("email_job_id") REFERENCES "email_jobs"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 

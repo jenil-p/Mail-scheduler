@@ -45,22 +45,27 @@ enum DraftStatus {
   FALLBACK
   APPROVED
   HELD
-  SENT
+  // Handed to the send path (the EmailJob row exists). Sent/failed is derived by
+  // joining that EmailJob through emailJobId — never stored on the draft.
+  QUEUED
 }
 
 model EmailJob {
-  id              String      @id @default(uuid()) @db.Uuid
-  userId          String      @map("user_id")
-  recipientEmail  String      @map("recipient_email")
-  subject         String
-  body            String
-  senderEmail     String      @map("sender_email")
-  scheduledAt     DateTime    @map("scheduled_at") @db.Timestamptz()
-  status          EmailStatus @default(pending)
-  sentAt          DateTime?   @map("sent_at") @db.Timestamptz()
-  errorMessage    String?     @map("error_message") @db.Text
-  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt       DateTime    @updatedAt @map("updated_at") @db.Timestamptz()
+  id             String      @id @default(uuid()) @db.Uuid
+  userId         String      @map("user_id")
+  recipientEmail String      @map("recipient_email")
+  subject        String
+  body           String
+  senderEmail    String      @map("sender_email")
+  scheduledAt    DateTime    @map("scheduled_at") @db.Timestamptz()
+  status         EmailStatus @default(pending)
+  sentAt         DateTime?   @map("sent_at") @db.Timestamptz()
+  errorMessage   String?     @map("error_message") @db.Text
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz()
+
+  // Campaign draft that produced this send (1:1, set on the draft side).
+  generatedDraft GeneratedDraft?
 
   @@index([status])
   @@index([scheduledAt])
@@ -84,7 +89,13 @@ model Campaign {
   unsubscribeUrl        String           @map("unsubscribe_url") @db.Text
   aiEnabled             Boolean          @default(false) @map("ai_enabled")
   aiInstruction         String?          @map("ai_instruction") @db.Text
-  // Prompt fingerprint frozen when the samples are approved.
+  // Frozen prompt identity. Written when sampling starts and rewritten on every
+  // regenerate, from live config *at that moment*; generation and draftId always
+  // read these stored values, never the running process's env.
+  promptFingerprint     String?          @map("prompt_fingerprint")
+  llmModel              String?          @map("llm_model")
+  promptTemplateVersion String?          @map("prompt_template_version")
+  // Frozen when the samples are approved; must equal promptFingerprint.
   approvedPromptVersion String?          @map("approved_prompt_version")
   reviewMode            ReviewMode       @default(SAMPLE) @map("review_mode")
   onUnresolved          UnresolvedPolicy @default(FALLBACK_TO_PLAIN) @map("on_unresolved")
@@ -127,38 +138,42 @@ model Recipient {
 /// sha256-derived id so retried/duplicated jobs cannot generate or send twice.
 model GeneratedDraft {
   // Deterministic id: sha256(campaignId|recipientId|templateHash|promptFingerprint).slice(0, 32)
-  id               String      @id
-  campaignId       String      @map("campaign_id")
-  recipientId      String      @map("recipient_id")
+  id             String      @id
+  campaignId     String      @map("campaign_id")
+  recipientId    String      @map("recipient_id")
   // Set in the same transaction that creates the send-path EmailJob row, so a
-  // draft can never produce two sends (null until the draft is scheduled).
-  emailJobId       String?     @unique @map("email_job_id") @db.Uuid
-  aiIntro          String?     @map("ai_intro") @db.Text
+  // draft can never produce two sends. Cleared by the FK on delete (see Phase 6
+  // notes: cancel deletes unsent EmailJobs and the draft moves to HELD).
+  emailJobId     String?     @unique @map("email_job_id") @db.Uuid
+  aiIntro        String?     @map("ai_intro") @db.Text
   // Final rendered subject/body — exactly what the user approved and what is sent.
-  subject          String      @db.Text
-  body             String      @db.Text
-  status           DraftStatus @default(PENDING)
+  subject        String      @db.Text
+  body           String      @db.Text
+  status         DraftStatus @default(PENDING)
   // Array of { code, detail } failures from the deterministic guardrails.
-  flagReasons      Json?       @map("flag_reasons")
-  fallbackReason   String?     @map("fallback_reason")
-  isSample         Boolean     @default(false) @map("is_sample")
+  flagReasons    Json?       @map("flag_reasons")
+  fallbackReason String?     @map("fallback_reason")
+  isSample       Boolean     @default(false) @map("is_sample")
   // SYSTEM | USER
-  resolvedBy       String?     @map("resolved_by")
-  model            String?
-  promptVersion    String      @map("prompt_version")
-  tokensIn         Int?        @map("tokens_in")
-  tokensOut        Int?        @map("tokens_out")
-  latencyMs        Int?        @map("latency_ms")
-  attempts         Int         @default(0)
+  resolvedBy     String?     @map("resolved_by")
+  model          String?
+  // The campaign's promptFingerprint at generation time. Every draft query
+  // (counts, fan-out, completion detection, scheduling) filters on it, so a
+  // regenerate leaves the previous batch behind instead of mixing identities.
+  promptVersion  String      @map("prompt_version")
+  tokensIn       Int?        @map("tokens_in")
+  tokensOut      Int?        @map("tokens_out")
+  latencyMs      Int?        @map("latency_ms")
+  attempts       Int         @default(0)
   // Observed 429s for this draft (metrics only, not a retry counter).
-  rateLimitHits    Int         @default(0) @map("rate_limit_hits")
-  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz()
+  rateLimitHits  Int         @default(0) @map("rate_limit_hits")
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz()
 
   campaign  Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   recipient Recipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  emailJob  EmailJob? @relation(fields: [emailJobId], references: [id], onDelete: SetNull)
 
-  @@index([campaignId, status])
-  @@index([campaignId, isSample])
+  @@index([campaignId, promptVersion, status])
   @@map("generated_drafts")
 }
