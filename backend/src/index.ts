@@ -1,9 +1,12 @@
 import express from "express";
 import cors from "cors";
-import { config } from "./config";
+import type { Worker } from "bullmq";
+import { config, isAiPersonalizationEnabled } from "./config";
 import { errorHandler } from "./middleware/errorHandler";
 import { createEmailWorker } from "./queue/worker";
 import { recoverPendingJobs } from "./queue/recovery";
+import { closeGenerateQueue } from "./queue/generateQueue";
+import { createGenerateWorker } from "./queue/generateWorker";
 import authRoutes from "./routes/auth";
 import scheduleRoutes from "./routes/schedule";
 import jobsRoutes from "./routes/jobs";
@@ -36,6 +39,20 @@ app.use(errorHandler);
 const worker = createEmailWorker();
 console.log(`[Worker] Email processing worker started — queue: email-scheduler`);
 
+// The generate worker only exists when AI personalization is enabled, so a
+// deployment with the flag off runs exactly the processes it ran before.
+const generateWorker: Worker | undefined = isAiPersonalizationEnabled()
+  ? createGenerateWorker()
+  : undefined;
+
+if (generateWorker) {
+  console.log(
+    `[Generate] Generation worker started — queue: generate, provider: ${config.ai.provider}`
+  );
+} else {
+  console.log("[Generate] AI personalization is disabled — no generation worker started");
+}
+
 // Recover pending jobs from DB that may have been lost from Redis
 // Uses BullMQ's jobId dedup so it's safe to run even when Redis is healthy
 recoverPendingJobs().then(({ recovered, skipped }) => {
@@ -51,14 +68,13 @@ app.listen(config.port, () => {
 });
 
 // Graceful shutdown
-process.on("SIGTERM", async () => {
+async function shutdown(): Promise<void> {
   console.log("Shutting down gracefully...");
-  await worker.close();
+  // Workers first (they finish the job in flight), then the queues they read from.
+  await Promise.all([worker.close(), generateWorker?.close()]);
+  await closeGenerateQueue();
   process.exit(0);
-});
+}
 
-process.on("SIGINT", async () => {
-  console.log("Shutting down gracefully...");
-  await worker.close();
-  process.exit(0);
-});
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
