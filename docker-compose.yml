@@ -43,6 +43,12 @@ services:
     env_file:
       - ./backend/.env
     # Infra wiring is set here so it wins over any localhost values in .env
+    #
+    # AI personalization vars are deliberately NOT listed here: `environment:`
+    # takes precedence over `env_file:`, so hardcoding them would silently
+    # ignore backend/.env. They default to the mock provider and the off flag in
+    # code, so the stack works out of the box with no AI configuration at all —
+    # set AI_PERSONALIZATION_ENABLED / LLM_* in backend/.env to opt in.
     environment:
       NODE_ENV: production
       PORT: 4000

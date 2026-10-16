@@ -9,4 +9,7 @@
  * 🟢 You can import this file directly.
  */
 export type * from './models/EmailJob'
+export type * from './models/Campaign'
+export type * from './models/Recipient'
+export type * from './models/GeneratedDraft'
 export type * from './commonInputTypes'

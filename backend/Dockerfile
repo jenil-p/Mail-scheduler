@@ -16,8 +16,8 @@ COPY prisma.config.ts ./
 COPY prisma ./prisma
 RUN npx prisma generate
 
-# Compile TypeScript -> dist/
-COPY tsconfig.json ./
+# Compile TypeScript -> dist/ (tsconfig.build.json keeps test files out)
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build
 

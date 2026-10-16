@@ -17,3 +17,49 @@ export const EmailStatus = {
 } as const
 
 export type EmailStatus = (typeof EmailStatus)[keyof typeof EmailStatus]
+
+
+export const CampaignStatus = {
+  DRAFT: 'DRAFT',
+  SAMPLING: 'SAMPLING',
+  SAMPLE_REVIEW: 'SAMPLE_REVIEW',
+  GENERATING: 'GENERATING',
+  EXCEPTION_REVIEW: 'EXCEPTION_REVIEW',
+  SCHEDULED: 'SCHEDULED',
+  SENDING: 'SENDING',
+  COMPLETED: 'COMPLETED',
+  PAUSED: 'PAUSED',
+  CANCELLED: 'CANCELLED'
+} as const
+
+export type CampaignStatus = (typeof CampaignStatus)[keyof typeof CampaignStatus]
+
+
+export const ReviewMode = {
+  SAMPLE: 'SAMPLE',
+  FULL: 'FULL'
+} as const
+
+export type ReviewMode = (typeof ReviewMode)[keyof typeof ReviewMode]
+
+
+export const UnresolvedPolicy = {
+  FALLBACK_TO_PLAIN: 'FALLBACK_TO_PLAIN',
+  HOLD: 'HOLD'
+} as const
+
+export type UnresolvedPolicy = (typeof UnresolvedPolicy)[keyof typeof UnresolvedPolicy]
+
+
+export const DraftStatus = {
+  PENDING: 'PENDING',
+  GENERATING: 'GENERATING',
+  READY: 'READY',
+  FLAGGED: 'FLAGGED',
+  FALLBACK: 'FALLBACK',
+  APPROVED: 'APPROVED',
+  HELD: 'HELD',
+  SENT: 'SENT'
+} as const
+
+export type DraftStatus = (typeof DraftStatus)[keyof typeof DraftStatus]

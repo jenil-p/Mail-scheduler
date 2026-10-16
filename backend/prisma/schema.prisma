@@ -14,6 +14,40 @@ enum EmailStatus {
   rate_limited
 }
 
+enum CampaignStatus {
+  DRAFT
+  SAMPLING
+  SAMPLE_REVIEW
+  GENERATING
+  EXCEPTION_REVIEW
+  SCHEDULED
+  SENDING
+  COMPLETED
+  PAUSED
+  CANCELLED
+}
+
+enum ReviewMode {
+  SAMPLE
+  FULL
+}
+
+enum UnresolvedPolicy {
+  FALLBACK_TO_PLAIN
+  HOLD
+}
+
+enum DraftStatus {
+  PENDING
+  GENERATING
+  READY
+  FLAGGED
+  FALLBACK
+  APPROVED
+  HELD
+  SENT
+}
+
 model EmailJob {
   id              String      @id @default(uuid()) @db.Uuid
   userId          String      @map("user_id")
@@ -33,4 +67,98 @@ model EmailJob {
   @@index([senderEmail, status])
   @@index([userId, status])
   @@map("email_jobs")
+}
+
+/// A campaign is one template sent to many recipients with an optional
+/// per-recipient AI-written opening line. `aiEnabled = false` keeps the whole
+/// existing send path untouched (no drafts, no generate-queue hops).
+model Campaign {
+  id                    String           @id @default(cuid())
+  userId                String           @map("user_id")
+  name                  String
+  subjectTemplate       String           @map("subject_template") @db.Text
+  bodyTemplate          String           @map("body_template") @db.Text
+  templateHash          String           @map("template_hash")
+  // Rendered values for {{link}} and {{unsubscribe_link}}; only http(s) allowed.
+  linkUrl               String           @map("link_url") @db.Text
+  unsubscribeUrl        String           @map("unsubscribe_url") @db.Text
+  aiEnabled             Boolean          @default(false) @map("ai_enabled")
+  aiInstruction         String?          @map("ai_instruction") @db.Text
+  // Prompt fingerprint frozen when the samples are approved.
+  approvedPromptVersion String?          @map("approved_prompt_version")
+  reviewMode            ReviewMode       @default(SAMPLE) @map("review_mode")
+  onUnresolved          UnresolvedPolicy @default(FALLBACK_TO_PLAIN) @map("on_unresolved")
+  scheduledAt           DateTime         @map("scheduled_at") @db.Timestamptz()
+  status                CampaignStatus   @default(DRAFT)
+  // Visible campaign-level error (e.g. provider 401/403 paused generation).
+  errorMessage          String?          @map("error_message") @db.Text
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt             DateTime         @updatedAt @map("updated_at") @db.Timestamptz()
+
+  recipients Recipient[]
+  drafts     GeneratedDraft[]
+
+  @@index([userId, status])
+  @@map("campaigns")
+}
+
+/// One row per deduplicated recipient (lowercased email, unique per campaign).
+model Recipient {
+  id                     String   @id @default(cuid())
+  campaignId             String   @map("campaign_id")
+  email                  String
+  firstName              String?  @map("first_name")
+  company                String?
+  role                   String?
+  note                   String?
+  // Any CSV column that is not one of the recognized ones above.
+  extra                  Json?
+  hasPersonalizationData Boolean  @default(false) @map("has_personalization_data")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  campaign Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  drafts   GeneratedDraft[]
+
+  @@unique([campaignId, email])
+  @@map("campaign_recipients")
+}
+
+/// One generated (or fallback) draft per recipient, keyed by a deterministic
+/// sha256-derived id so retried/duplicated jobs cannot generate or send twice.
+model GeneratedDraft {
+  // Deterministic id: sha256(campaignId|recipientId|templateHash|promptFingerprint).slice(0, 32)
+  id               String      @id
+  campaignId       String      @map("campaign_id")
+  recipientId      String      @map("recipient_id")
+  // Set in the same transaction that creates the send-path EmailJob row, so a
+  // draft can never produce two sends (null until the draft is scheduled).
+  emailJobId       String?     @unique @map("email_job_id") @db.Uuid
+  aiIntro          String?     @map("ai_intro") @db.Text
+  // Final rendered subject/body — exactly what the user approved and what is sent.
+  subject          String      @db.Text
+  body             String      @db.Text
+  status           DraftStatus @default(PENDING)
+  // Array of { code, detail } failures from the deterministic guardrails.
+  flagReasons      Json?       @map("flag_reasons")
+  fallbackReason   String?     @map("fallback_reason")
+  isSample         Boolean     @default(false) @map("is_sample")
+  // SYSTEM | USER
+  resolvedBy       String?     @map("resolved_by")
+  model            String?
+  promptVersion    String      @map("prompt_version")
+  tokensIn         Int?        @map("tokens_in")
+  tokensOut        Int?        @map("tokens_out")
+  latencyMs        Int?        @map("latency_ms")
+  attempts         Int         @default(0)
+  // Observed 429s for this draft (metrics only, not a retry counter).
+  rateLimitHits    Int         @default(0) @map("rate_limit_hits")
+  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz()
+
+  campaign  Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipient Recipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, status])
+  @@index([campaignId, isSample])
+  @@map("generated_drafts")
 }

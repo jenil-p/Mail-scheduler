@@ -1,5 +1,11 @@
 import dotenv from "dotenv";
+import { parseAiConfig } from "./ai";
+
 dotenv.config();
+
+// Parsed and validated once, at import time: a bad AI/LLM variable fails the
+// process immediately with a readable message instead of inside a worker later.
+const ai = parseAiConfig(process.env);
 
 export const config = {
   port: parseInt(process.env.PORT || "8000", 10),
@@ -36,4 +42,12 @@ export const config = {
     minDelayMs: parseInt(process.env.MIN_DELAY_MS || "2000", 10),
     maxEmailsPerHour: parseInt(process.env.MAX_EMAILS_PER_HOUR || "200", 10),
   },
+
+  // AI personalization — fully inert while `ai.enabled` is false
+  ai,
 };
+
+export type { AiConfig, LlmProvider } from "./ai";
+export { LLM_PROVIDERS } from "./ai";
+
+export const isAiPersonalizationEnabled = (): boolean => config.ai.enabled;

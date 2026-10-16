@@ -51,7 +51,10 @@ export const AnyNull = runtime.AnyNull
 
 
 export const ModelName = {
-  EmailJob: 'EmailJob'
+  EmailJob: 'EmailJob',
+  Campaign: 'Campaign',
+  Recipient: 'Recipient',
+  GeneratedDraft: 'GeneratedDraft'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -88,12 +91,87 @@ export const EmailJobScalarFieldEnum = {
 export type EmailJobScalarFieldEnum = (typeof EmailJobScalarFieldEnum)[keyof typeof EmailJobScalarFieldEnum]
 
 
+export const CampaignScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  name: 'name',
+  subjectTemplate: 'subjectTemplate',
+  bodyTemplate: 'bodyTemplate',
+  templateHash: 'templateHash',
+  linkUrl: 'linkUrl',
+  unsubscribeUrl: 'unsubscribeUrl',
+  aiEnabled: 'aiEnabled',
+  aiInstruction: 'aiInstruction',
+  approvedPromptVersion: 'approvedPromptVersion',
+  reviewMode: 'reviewMode',
+  onUnresolved: 'onUnresolved',
+  scheduledAt: 'scheduledAt',
+  status: 'status',
+  errorMessage: 'errorMessage',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type CampaignScalarFieldEnum = (typeof CampaignScalarFieldEnum)[keyof typeof CampaignScalarFieldEnum]
+
+
+export const RecipientScalarFieldEnum = {
+  id: 'id',
+  campaignId: 'campaignId',
+  email: 'email',
+  firstName: 'firstName',
+  company: 'company',
+  role: 'role',
+  note: 'note',
+  extra: 'extra',
+  hasPersonalizationData: 'hasPersonalizationData',
+  createdAt: 'createdAt'
+} as const
+
+export type RecipientScalarFieldEnum = (typeof RecipientScalarFieldEnum)[keyof typeof RecipientScalarFieldEnum]
+
+
+export const GeneratedDraftScalarFieldEnum = {
+  id: 'id',
+  campaignId: 'campaignId',
+  recipientId: 'recipientId',
+  emailJobId: 'emailJobId',
+  aiIntro: 'aiIntro',
+  subject: 'subject',
+  body: 'body',
+  status: 'status',
+  flagReasons: 'flagReasons',
+  fallbackReason: 'fallbackReason',
+  isSample: 'isSample',
+  resolvedBy: 'resolvedBy',
+  model: 'model',
+  promptVersion: 'promptVersion',
+  tokensIn: 'tokensIn',
+  tokensOut: 'tokensOut',
+  latencyMs: 'latencyMs',
+  attempts: 'attempts',
+  rateLimitHits: 'rateLimitHits',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type GeneratedDraftScalarFieldEnum = (typeof GeneratedDraftScalarFieldEnum)[keyof typeof GeneratedDraftScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
 } as const
 
 export type SortOrder = (typeof SortOrder)[keyof typeof SortOrder]
+
+
+export const NullableJsonNullValueInput = {
+  DbNull: DbNull,
+  JsonNull: JsonNull
+} as const
+
+export type NullableJsonNullValueInput = (typeof NullableJsonNullValueInput)[keyof typeof NullableJsonNullValueInput]
 
 
 export const QueryMode = {
@@ -110,4 +188,13 @@ export const NullsOrder = {
 } as const
 
 export type NullsOrder = (typeof NullsOrder)[keyof typeof NullsOrder]
+
+
+export const JsonNullValueFilter = {
+  DbNull: DbNull,
+  JsonNull: JsonNull,
+  AnyNull: AnyNull
+} as const
+
+export type JsonNullValueFilter = (typeof JsonNullValueFilter)[keyof typeof JsonNullValueFilter]
 

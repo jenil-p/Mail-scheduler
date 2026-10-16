@@ -22,3 +22,21 @@ export * from './enums';
  * 
  */
 export type EmailJob = Prisma.EmailJobModel
+/**
+ * Model Campaign
+ * A campaign is one template sent to many recipients with an optional
+ * per-recipient AI-written opening line. `aiEnabled = false` keeps the whole
+ * existing send path untouched (no drafts, no generate-queue hops).
+ */
+export type Campaign = Prisma.CampaignModel
+/**
+ * Model Recipient
+ * One row per deduplicated recipient (lowercased email, unique per campaign).
+ */
+export type Recipient = Prisma.RecipientModel
+/**
+ * Model GeneratedDraft
+ * One generated (or fallback) draft per recipient, keyed by a deterministic
+ * sha256-derived id so retried/duplicated jobs cannot generate or send twice.
+ */
+export type GeneratedDraft = Prisma.GeneratedDraftModel
