@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeHasPersonalizationData, parseRecipientsCsv } from "./csv";
+import { computeHasPersonalizationData, normalizeHeaderName, parseRecipientsCsv } from "./csv";
 
 const options = { maxRecipients: 500, fieldMaxLength: 200, noteMaxLength: 500 };
 
@@ -208,15 +208,47 @@ describe("parseRecipientsCsv", () => {
     expect(result.rejected[0].detail).toContain("city");
   });
 
-  it("enforces the recipient limit and reports the rows it dropped", () => {
+  it("fails the whole import when valid distinct recipients exceed the limit, stating count and limit", () => {
     const rows = Array.from({ length: 5 }, (_, i) => `u${i}@example.com`).join("\n");
     const result = parseRecipientsCsv(`email\n${rows}\n`, { ...options, maxRecipients: 2 });
 
+    expect(result).toMatchObject({ ok: false, code: "TOO_MANY_RECIPIENTS" });
+    if (!result.ok) {
+      expect(result.message).toContain("5");
+      expect(result.message).toContain("2");
+    }
+  });
+
+  it("does not fail the import when duplicates keep it within the limit", () => {
+    const result = parseRecipientsCsv(
+      "email\na@example.com\na@example.com\na@example.com\n",
+      { ...options, maxRecipients: 1 }
+    );
+
     if (!result.ok) throw new Error(`expected ok, got ${result.code}`);
 
-    expect(result.recipients.map((r) => r.email)).toEqual(["u0@example.com", "u1@example.com"]);
-    expect(result.rejected.filter((r) => r.code === "OVER_RECIPIENT_LIMIT")).toHaveLength(3);
-    expect(result.rejectedCount).toBe(3);
+    expect(result.recipients.map((r) => r.email)).toEqual(["a@example.com"]);
+    expect(result.rejectedCount).toBe(2);
+  });
+
+  it("rejects an address longer than 254 characters", () => {
+    const longAddress = `${"a".repeat(250)}@example.com`;
+    const result = parseRecipientsCsv(`email\n${longAddress}\n`, options);
+
+    if (!result.ok) throw new Error(`expected ok, got ${result.code}`);
+
+    expect(result.recipients).toHaveLength(0);
+    expect(result.rejected[0]).toMatchObject({ rowNumber: 2, code: "INVALID_EMAIL" });
+    expect(result.rejected[0].detail).toContain("254");
+  });
+
+  it("accepts an address at exactly the 254 character limit", () => {
+    const local = "a".repeat(254 - "@example.com".length);
+    const result = parseRecipientsCsv(`email\n${local}@example.com\n`, options);
+
+    if (!result.ok) throw new Error(`expected ok, got ${result.code}`);
+
+    expect(result.recipients).toHaveLength(1);
   });
 
   it("caps the reported rejections but keeps the exact count", () => {
@@ -235,6 +267,73 @@ describe("parseRecipientsCsv", () => {
     if (!result.ok) throw new Error(`expected ok, got ${result.code}`);
 
     expect(result.recipients).toHaveLength(2);
+  });
+});
+
+describe("header normalization", () => {
+  it("normalises headers into usable variable names and returns the mapping", () => {
+    const csv = [
+      "Email, First Name ,Job Title,Company Name,Sign-up Date",
+      "a@example.com,Ana,Head of Ops,Acme,2026-01-02",
+    ].join("\n");
+    const result = parseRecipientsCsv(csv, options);
+
+    if (!result.ok) throw new Error(`expected ok, got ${result.code}`);
+
+    expect(result.headerMapping).toEqual({
+      Email: "email",
+      "First Name": "first_name",
+      "Job Title": "job_title",
+      "Company Name": "company_name",
+      "Sign-up Date": "sign_up_date",
+    });
+    expect(result.extraColumns).toEqual(["job_title", "company_name", "sign_up_date"]);
+    expect(result.recipients[0]).toMatchObject({
+      email: "a@example.com",
+      firstName: "Ana",
+      extra: { job_title: "Head of Ops", company_name: "Acme", sign_up_date: "2026-01-02" },
+    });
+  });
+
+  it.each([
+    ["First Name", "first_name"],
+    ["Job Title", "job_title"],
+    ["  EMAIL  ", "email"],
+    ["Sign-up Date", "sign_up_date"],
+    ["__weird__name__", "weird_name"],
+    ["2026 Sign-up", "2026_sign_up"],
+    ["", ""],
+    ["---", ""],
+  ])("normalises %j to %j", (original, expected) => {
+    expect(normalizeHeaderName(original)).toBe(expected);
+  });
+
+  it("ignores unnamed columns and keeps the first of two identical names", () => {
+    const csv = "Email,First Name,,first_name\na@example.com,Ana,ignored,Bo\n";
+    const result = parseRecipientsCsv(csv, options);
+
+    if (!result.ok) throw new Error(`expected ok, got ${result.code}`);
+
+    expect(result.headerMapping).toEqual({ Email: "email", "First Name": "first_name", first_name: "first_name" });
+    expect(result.recipients[0].firstName).toBe("Ana");
+  });
+
+  it.each(["ai_intro", "link", "unsubscribe_link", "AI Intro", "Unsubscribe-Link", "LINK"])(
+    "rejects a CSV with the reserved column %j",
+    (column) => {
+      const result = parseRecipientsCsv(`email,${column}\na@example.com,x\n`, options);
+
+      expect(result).toMatchObject({ ok: false, code: "RESERVED_COLUMN" });
+      if (!result.ok) {
+        expect(result.message).toContain("reserved");
+      }
+    }
+  );
+
+  it("still reports a missing email column when both problems are present", () => {
+    const result = parseRecipientsCsv("name,link\nAna,https://x\n", options);
+
+    expect(result).toMatchObject({ ok: false, code: "MISSING_EMAIL_COLUMN" });
   });
 });
 

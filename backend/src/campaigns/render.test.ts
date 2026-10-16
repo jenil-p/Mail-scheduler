@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   countPlaceholder,
   escapeHtml,
+  normalizeNewlines,
   renderBody,
   renderEmail,
   renderSubject,
@@ -14,6 +15,11 @@ const person = {
   link: "https://example.com/webinar?utm=a&utm=b",
   unsubscribe_link: "https://example.com/unsubscribe?u=1&t=2",
 };
+
+const linkAnchor =
+  '<a href="https://example.com/webinar?utm=a&amp;utm=b">https://example.com/webinar?utm=a&amp;utm=b</a>';
+const unsubscribeAnchor =
+  '<a href="https://example.com/unsubscribe?u=1&amp;t=2">https://example.com/unsubscribe?u=1&amp;t=2</a>';
 
 const bodyWithSlot = [
   "Hi {{first_name}},",
@@ -37,6 +43,12 @@ describe("escapeHtml", () => {
   });
 });
 
+describe("normalizeNewlines", () => {
+  it("turns CRLF and lone CR into LF", () => {
+    expect(normalizeNewlines("a\r\nb\rc\nd")).toBe("a\nb\nc\nd");
+  });
+});
+
 describe("scanTemplate", () => {
   it("collects variables in order, counts occurrences and flags malformed braces", () => {
     const scan = scanTemplate("{{a}} {{b}} {{a}} {{ a }} {oops} {{broken");
@@ -44,9 +56,36 @@ describe("scanTemplate", () => {
     expect(scan.variables).toEqual(["a", "b"]);
     expect(scan.occurrences).toEqual({ a: 3, b: 1 });
     expect(scan.malformed).toEqual(["{{"]);
+    expect(scan.invalid).toEqual([]);
   });
 
-  it("counts placeholders case-insensitively", () => {
+  it("keeps names only, with defaults recorded separately", () => {
+    const scan = scanTemplate("Hi {{first_name|there}} from {{company|Acme}}");
+
+    expect(scan.variables).toEqual(["first_name", "company"]);
+    expect(scan.defaults).toEqual({ first_name: "there", company: "Acme" });
+    expect(scan.placeholders.map((p) => p.defaultText)).toEqual(["there", "Acme"]);
+  });
+
+  it("marks unusable placeholders as invalid, not as variables", () => {
+    const scan = scanTemplate("{{company|}} and {{a|b|c}} and {{bad name}}");
+
+    expect(scan.variables).toEqual([]);
+    expect(scan.invalid).toEqual(["company|", "a|b|c", "bad name"]);
+  });
+
+  it("accepts names that start with a digit (normalised headers can)", () => {
+    expect(scanTemplate("{{2026_sign_up}}").variables).toEqual(["2026_sign_up"]);
+  });
+
+  it("flags a default longer than 50 characters as invalid", () => {
+    const scan = scanTemplate(`{{company|${"x".repeat(51)}}}`);
+
+    expect(scan.variables).toEqual([]);
+    expect(scan.invalid).toHaveLength(1);
+  });
+
+  it("counts placeholders case-insensitively, ignoring defaults", () => {
     expect(countPlaceholder("{{AI_INTRO}} and {{ai_intro}}", "ai_intro")).toBe(2);
   });
 
@@ -61,7 +100,7 @@ describe("renderBody", () => {
 
     expect(body).toContain("Hi Priya,");
     expect(body).toContain("Since you lead ops, this fits.");
-    expect(body).toContain("&amp;utm=b");
+    expect(body).toContain(linkAnchor);
     expect(body).not.toContain("\n");
     expect(body).toContain("<br>");
   });
@@ -82,18 +121,14 @@ describe("renderBody", () => {
     const body = renderBody(bodyWithSlot, { ...person, ai_intro: undefined });
 
     expect(body).toBe(
-      "Hi Priya,<br><br>" +
-        "We&#39;re hosting a 30-minute webinar on automating warehouse reporting on Oct 28. " +
-        "Register here: https://example.com/webinar?utm=a&amp;utm=b<br><br>" +
-        "Thanks,<br>Meera<br>https://example.com/unsubscribe?u=1&amp;t=2"
+      `Hi Priya,<br><br>We&#39;re hosting a 30-minute webinar on automating warehouse reporting on ` +
+        `Oct 28. Register here: ${linkAnchor}<br><br>Thanks,<br>Meera<br>${unsubscribeAnchor}`
     );
     expect(body).not.toContain("<br><br><br>");
   });
 
   it("treats a whitespace-only intro as empty", () => {
-    const body = renderBody("A\n{{ai_intro}}\nB", { ai_intro: "   " });
-
-    expect(body).toBe("A<br>B");
+    expect(renderBody("A\n{{ai_intro}}\nB", { ai_intro: "   " })).toBe("A<br>B");
   });
 
   it("drops a leading slot line without leaving a leading blank line", () => {
@@ -105,7 +140,9 @@ describe("renderBody", () => {
   });
 
   it("removes an inline empty slot without touching the rest of the line", () => {
-    expect(renderBody("Hi {{first_name}} {{ai_intro}}there", { first_name: "Raj" })).toBe("Hi Raj there");
+    expect(renderBody("Hi {{first_name}} {{ai_intro}}there", { first_name: "Raj" })).toBe(
+      "Hi Raj there"
+    );
   });
 
   it("accepts the slot with surrounding whitespace and mixed case", () => {
@@ -114,13 +151,97 @@ describe("renderBody", () => {
   });
 
   it("keeps the user's own paragraph spacing when the intro is present", () => {
-    const body = renderBody("A\n\n\nB", {});
-
-    expect(body).toBe("A<br><br><br>B");
+    expect(renderBody("A\n\n\nB", {})).toBe("A<br><br><br>B");
   });
 
   it("matches variable names case-insensitively (CSV headers are)", () => {
     expect(renderBody("Hi {{First_Name}}", { first_name: "Priya" })).toBe("Hi Priya");
+  });
+
+  describe("defaults", () => {
+    it("uses the default when the value is missing or blank", () => {
+      expect(renderBody("Hi {{first_name|there}}", {})).toBe("Hi there");
+      expect(renderBody("Hi {{first_name|there}}", { first_name: "" })).toBe("Hi there");
+      expect(renderBody("Hi {{first_name|there}}", { first_name: "   " })).toBe("Hi there");
+    });
+
+    it("prefers the value when there is one", () => {
+      expect(renderBody("Hi {{first_name|there}}", { first_name: "Priya" })).toBe("Hi Priya");
+    });
+
+    it("escapes the default text like any other text", () => {
+      expect(renderBody("Hi {{first_name|<b>there</b>}}", {})).toBe(
+        "Hi &lt;b&gt;there&lt;/b&gt;"
+      );
+    });
+
+    it("trims the default and tolerates spaces around the pipe", () => {
+      expect(renderBody("{{company | Acme Corp }}", {})).toBe("Acme Corp");
+    });
+
+    it("supports defaults in the subject too", () => {
+      expect(renderSubject("Invite for {{company|your team}}", {})).toBe("Invite for your team");
+    });
+  });
+
+  describe("line endings", () => {
+    it("normalises CRLF so no carriage return survives", () => {
+      const body = renderBody("Hi {{first_name}},\r\n\r\n{{ai_intro}}\r\n\r\nBye", {
+        first_name: "Raj",
+      });
+
+      expect(body).toBe("Hi Raj,<br><br>Bye");
+      expect(body).not.toContain("\r");
+    });
+
+    it("normalises lone CR line endings", () => {
+      const body = renderBody("A\rB\r{{ai_intro}}\rC", {});
+
+      expect(body).toBe("A<br>B<br>C");
+      expect(body).not.toContain("\r");
+    });
+
+    it("normalises CRLF in the subject", () => {
+      expect(renderSubject("Invite\r\nfor {{company}}", { company: "Acme" })).toBe(
+        "Invite for Acme"
+      );
+    });
+
+    it("removes the slot line in a CRLF template without leaving a blank gap", () => {
+      const body = renderBody("Hi,\r\n\r\n{{ai_intro}}\r\n\r\nBye", {});
+
+      expect(body).toBe("Hi,<br><br>Bye");
+      expect(body).not.toContain("<br><br><br>");
+    });
+  });
+
+  describe("link anchors", () => {
+    it("renders link and unsubscribe_link as anchors with the escaped URL in href and text", () => {
+      const body = renderBody("{{link}} {{unsubscribe_link}}", person);
+
+      expect(body).toBe(`${linkAnchor} ${unsubscribeAnchor}`);
+      expect(body).toContain('href="https://example.com/webinar?utm=a&amp;utm=b"');
+      expect(body).not.toContain("&utm=b\""); // the raw & must be escaped in the attribute
+    });
+
+    it("does not anchor any other variable", () => {
+      expect(
+        renderBody("{{company}}", { company: "https://example.com/?a=1&b=2" })
+      ).toBe("https://example.com/?a=1&amp;b=2");
+    });
+
+    it("stays plain escaped text when the link value is not an http(s) URL", () => {
+      expect(renderBody("{{link}}", { link: "javascript:alert(1)" })).toBe(
+        "javascript:alert(1)"
+      );
+      expect(renderBody("{{link}}", { link: "" })).toBe("");
+    });
+
+    it("stays plain escaped text in the subject", () => {
+      expect(renderSubject("Read {{link}}", person)).toBe(
+        "Read https://example.com/webinar?utm=a&utm=b"
+      );
+    });
   });
 
   it("renders a variable the recipient has no value for as empty text", () => {
@@ -133,6 +254,7 @@ describe("renderBody", () => {
     const body = renderBody("Hi {{first_name}}, {{city}}!", { first_name: "Ana" });
 
     expect(body).toBe("Hi Ana, !");
+    expect(body).not.toContain("{ {");
     expect(body).not.toContain("{{");
   });
 });
@@ -164,14 +286,14 @@ describe("renderEmail", () => {
     expect(subject).toBe("Invitation: Ops Automation Webinar, Oct 28");
     expect(body).toContain("Hi Priya,");
     expect(body).toContain("Since you lead operations at Acme Corp, this should be relevant.");
-    expect(body).toContain("Thanks,");
+    expect(body).toContain(linkAnchor);
   });
 
   it("renders the thin-data recipient with the slot removed and no gap", () => {
     const { body } = renderEmail({
       subjectTemplate: "Invitation",
       bodyTemplate: bodyWithSlot,
-      values: { first_name: "Raj", link: "https://example.com/x", unsubscribe_link: "https://example.com/u", ai_intro: undefined },
+      values: { ...person, first_name: "Raj", ai_intro: undefined },
     });
 
     expect(body).not.toContain("{{");

@@ -38,6 +38,11 @@ function envFlag(defaultValue: boolean) {
   }, z.boolean());
 }
 
+/** A blank environment value counts as unset, exactly like a missing one. */
+function blankAsUnset<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((value) => (value === "" ? undefined : value), schema);
+}
+
 function envInt(defaultValue: number, bounds: { min: number; max: number }) {
   return z.preprocess((value) => {
     if (value === undefined || value === "") return defaultValue;
@@ -87,9 +92,9 @@ function envTimeZone(defaultValue: string) {
 export const aiConfigSchema = z
   .object({
     enabled: envFlag(false),
-    provider: z.enum(LLM_PROVIDERS).default("mock"),
-    apiKey: z.string().min(1).optional(),
-    model: z.string().min(1).optional(),
+    provider: blankAsUnset(z.enum(LLM_PROVIDERS).default("mock")),
+    apiKey: blankAsUnset(z.string().min(1).optional()),
+    model: blankAsUnset(z.string().min(1).optional()),
     timeoutMs: envInt(15_000, { min: 1_000, max: 120_000 }),
     maxRetries: envInt(4, { min: 0, max: 10 }),
     maxParseRetries: envInt(2, { min: 0, max: 10 }),

@@ -121,6 +121,33 @@ describe("parseAiConfig", () => {
     expect(ai).toMatchObject({ provider: "mock", dailyRateLimit: undefined, model: undefined });
   });
 
+  it("treats blank LLM_PROVIDER / LLM_API_KEY / LLM_MODEL as unset", () => {
+    const ai = parseAiConfig({
+      LLM_PROVIDER: "",
+      LLM_API_KEY: "",
+      LLM_MODEL: "",
+    });
+
+    expect(ai).toMatchObject({ provider: "mock", apiKey: undefined, model: undefined });
+  });
+
+  it("treats blank values as unset for a real provider too, and still fails readably", () => {
+    expect(() =>
+      parseAiConfig({
+        LLM_PROVIDER: "gemini",
+        LLM_API_KEY: "",
+        LLM_MODEL: "",
+        LLM_RATE_LIMIT_PER_DAY: "200",
+      })
+    ).toThrowError(/LLM_MODEL[\s\S]*LLM_API_KEY/);
+  });
+
+  it("treats a blank daily limit as unset", () => {
+    expect(() =>
+      parseAiConfig({ LLM_PROVIDER: "gemini", LLM_MODEL: "m", LLM_API_KEY: "k", LLM_RATE_LIMIT_PER_DAY: "" })
+    ).toThrowError(/LLM_RATE_LIMIT_PER_DAY/);
+  });
+
   it("validates the daily reset time zone", () => {
     expect(parseAiConfig({ LLM_DAILY_RESET_TZ: "Europe/Berlin" }).dailyResetTz).toBe("Europe/Berlin");
     expect(() => parseAiConfig({ LLM_DAILY_RESET_TZ: "Mars/Olympus" })).toThrowError(

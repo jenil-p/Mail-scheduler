@@ -15,14 +15,38 @@
  */
 
 import { parse } from "csv-parse/sync";
+import { RESERVED_VARIABLES } from "./render";
 
 export const EMAIL_COLUMN = "email";
 
 /** Columns with special meaning; every other column lands in `extra` (FR-1). */
 export const RECOGNIZED_COLUMNS = ["email", "first_name", "company", "role", "note"] as const;
 
+/**
+ * Columns that must not come from a CSV: a stray column must not be able to fill
+ * or override the AI slot or the two campaign-level links (see values.ts).
+ */
+export const RESERVED_COLUMNS = RESERVED_VARIABLES;
+
 /** Same rule as POST /api/schedule so the two paths accept the same addresses. */
 export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** RFC 5321 limit on the length of an email address. */
+export const EMAIL_MAX_LENGTH = 254;
+
+/**
+ * Normalise a header (or any raw variable source) into a template variable name:
+ * trim, lowercase, runs of non-alphanumeric characters become `_`, and leading /
+ * trailing `_` are stripped. `"First Name"` and `"first-name"` both become
+ * `first_name`, so the column is usable as `{{first_name}}`.
+ */
+export function normalizeHeaderName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
 
 /** Cap on how many rejections are reported back (the count is always exact). */
 export const MAX_REPORTED_REJECTIONS = 100;
@@ -43,8 +67,7 @@ export type RecipientRejectionCode =
   | "MISSING_EMAIL"
   | "INVALID_EMAIL"
   | "DUPLICATE_EMAIL"
-  | "FIELD_TOO_LONG"
-  | "OVER_RECIPIENT_LIMIT";
+  | "FIELD_TOO_LONG";
 
 export interface RecipientRejection {
   rowNumber: number;
@@ -54,7 +77,12 @@ export interface RecipientRejection {
   detail: string;
 }
 
-export type CsvImportErrorCode = "EMPTY_FILE" | "MISSING_EMAIL_COLUMN" | "MALFORMED_CSV";
+export type CsvImportErrorCode =
+  | "EMPTY_FILE"
+  | "MISSING_EMAIL_COLUMN"
+  | "MALFORMED_CSV"
+  | "RESERVED_COLUMN"
+  | "TOO_MANY_RECIPIENTS";
 
 export interface CsvImportOptions {
   /** FR-2, MAX_RECIPIENTS_PER_CAMPAIGN. */
@@ -72,8 +100,10 @@ export type CsvImportResult =
       /** Capped at MAX_REPORTED_REJECTIONS; use rejectedCount for the total. */
       rejected: RecipientRejection[];
       rejectedCount: number;
-      /** Non-recognized column names, available as template variables. */
+      /** Non-recognized columns, normalised, available as template variables. */
       extraColumns: string[];
+      /** How each accepted header was normalised (original -> variable name). */
+      headerMapping: Record<string, string>;
       /** Data records seen (accepted + rejected). */
       dataRowCount: number;
     }
@@ -122,11 +152,14 @@ export function parseRecipientsCsv(input: string | Buffer, options: CsvImportOpt
   }
 
   const header = records[0].map((name) => name.trim());
+  const headerMapping: Record<string, string> = {};
   const columnIndex = new Map<string, number>();
 
-  header.forEach((name, index) => {
-    const key = name.toLowerCase();
-    if (key !== "" && !columnIndex.has(key)) columnIndex.set(key, index);
+  header.forEach((original, index) => {
+    const key = normalizeHeaderName(original);
+    if (key === "") return; // unnamed column: not usable as a variable
+    headerMapping[original] = key;
+    if (!columnIndex.has(key)) columnIndex.set(key, index); // first column with a name wins
   });
 
   if (!columnIndex.has(EMAIL_COLUMN)) {
@@ -139,12 +172,22 @@ export function parseRecipientsCsv(input: string | Buffer, options: CsvImportOpt
     };
   }
 
+  const reserved = RESERVED_COLUMNS.find((name) => columnIndex.has(name));
+  if (reserved) {
+    return {
+      ok: false,
+      code: "RESERVED_COLUMN",
+      message:
+        `The column "${reserved}" is reserved and cannot come from the CSV: ` +
+        `{{${reserved}}} is filled from the campaign itself. Rename or remove that column.`,
+    };
+  }
+
   const recognized = new Set<string>(RECOGNIZED_COLUMNS);
   const extraColumns: string[] = [];
-  for (const name of header) {
-    const key = name.toLowerCase();
-    if (key === "" || recognized.has(key) || extraColumns.some((c) => c.toLowerCase() === key)) continue;
-    extraColumns.push(name);
+  for (const key of columnIndex.keys()) {
+    if (recognized.has(key) || extraColumns.includes(key)) continue;
+    extraColumns.push(key);
   }
 
   const recipients: ParsedRecipient[] = [];
@@ -152,6 +195,7 @@ export function parseRecipientsCsv(input: string | Buffer, options: CsvImportOpt
   const seenEmails = new Set<string>();
   let rejectedCount = 0;
   let dataRowCount = 0;
+  let tooManyRecipients = false;
 
   const reject = (rejection: RecipientRejection) => {
     rejectedCount += 1;
@@ -177,6 +221,16 @@ export function parseRecipientsCsv(input: string | Buffer, options: CsvImportOpt
     }
 
     const email = rawEmail.toLowerCase();
+
+    if (email.length > EMAIL_MAX_LENGTH) {
+      reject({
+        rowNumber,
+        code: "INVALID_EMAIL",
+        value: truncate(rawEmail),
+        detail: `Address is longer than the ${EMAIL_MAX_LENGTH} character limit for an email address`,
+      });
+      continue;
+    }
 
     if (!EMAIL_REGEX.test(email)) {
       reject({
@@ -205,7 +259,7 @@ export function parseRecipientsCsv(input: string | Buffer, options: CsvImportOpt
 
     const extra: Record<string, string> = {};
     for (const name of extraColumns) {
-      const index = columnIndex.get(name.toLowerCase());
+      const index = columnIndex.get(name);
       const value = index === undefined ? "" : (record[index] ?? "").trim();
       if (value !== "") extra[name] = value;
     }
@@ -236,17 +290,14 @@ export function parseRecipientsCsv(input: string | Buffer, options: CsvImportOpt
       continue;
     }
 
-    if (recipients.length >= options.maxRecipients) {
-      reject({
-        rowNumber,
-        code: "OVER_RECIPIENT_LIMIT",
-        value: truncate(email),
-        detail: `Campaign limit of ${options.maxRecipients} recipients reached`,
-      });
+    seenEmails.add(email);
+
+    if (seenEmails.size > options.maxRecipients) {
+      // The whole import fails once the campaign cannot hold every recipient;
+      // keep counting distinct addresses so the message can state the real count.
+      tooManyRecipients = true;
       continue;
     }
-
-    seenEmails.add(email);
 
     recipients.push({
       rowNumber,
@@ -265,12 +316,23 @@ export function parseRecipientsCsv(input: string | Buffer, options: CsvImportOpt
   }
 
 
+  if (tooManyRecipients) {
+    return {
+      ok: false,
+      code: "TOO_MANY_RECIPIENTS",
+      message:
+        `The file has ${seenEmails.size} valid recipients, which is more than the ` +
+        `${options.maxRecipients} recipient limit for one campaign. Split it into smaller campaigns.`,
+    };
+  }
+
   return {
     ok: true,
     recipients,
     rejected,
     rejectedCount,
     extraColumns,
+    headerMapping,
     dataRowCount,
   };
 }
