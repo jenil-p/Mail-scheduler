@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "gemini:smoke": "tsx scripts/gemini-smoke.ts",
     "test:integration": "vitest run --mode integration",
     "start": "node --import tsx dist/index.js",
     "db:migrate": "prisma migrate dev",
@@ -18,6 +19,7 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@google/genai": "2.30.0",
     "@prisma/adapter-pg": "^7.0.0",
     "@prisma/client": "^7.0.0",
     "bullmq": "^5.20.0",

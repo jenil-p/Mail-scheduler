@@ -29,7 +29,26 @@ describe("parseAiConfig", () => {
       recipientFieldMaxLength: 200,
       recipientNoteMaxLength: 500,
       introMaxChars: 240,
+      // Phase 3: generate-queue retry delays and the Gemini output allowance.
+      retryBackoffBaseMs: 2_000,
+      retryBackoffMaxMs: 60_000,
+      maxOutputTokens: 512,
+      thinkingBudget: 0,
     });
+  });
+
+  it("rejects a retry ceiling below the base delay, naming the variable", () => {
+    expect(() =>
+      parseAiConfig({ LLM_RETRY_BASE_MS: "5000", LLM_RETRY_MAX_MS: "1000" })
+    ).toThrowError(/LLM_RETRY_MAX_MS/);
+  });
+
+  it("accepts the thinking budget range Gemini allows, including 0", () => {
+    expect(parseAiConfig({ LLM_THINKING_BUDGET: "0" }).thinkingBudget).toBe(0);
+    expect(parseAiConfig({ LLM_THINKING_BUDGET: "128" }).thinkingBudget).toBe(128);
+    expect(() => parseAiConfig({ LLM_THINKING_BUDGET: "-1" })).toThrowError(
+      /LLM_THINKING_BUDGET/
+    );
   });
 
   it("leaves the daily request limit unset for the mock provider (no invented quota)", () => {

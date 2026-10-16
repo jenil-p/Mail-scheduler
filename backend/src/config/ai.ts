@@ -98,6 +98,16 @@ export const aiConfigSchema = z
     timeoutMs: envInt(15_000, { min: 1_000, max: 120_000 }),
     maxRetries: envInt(4, { min: 0, max: 10 }),
     maxParseRetries: envInt(2, { min: 0, max: 10 }),
+    // Retry delays for the generate queue's custom backoff (decision A3). Base and
+    // maximum only: the jitter is in code (src/ai/llm/backoff.ts).
+    retryBackoffBaseMs: envInt(2_000, { min: 1, max: 600_000 }),
+    retryBackoffMaxMs: envInt(60_000, { min: 1, max: 3_600_000 }),
+    // Total output allowance for one call, thinking tokens included — see the
+    // header of src/ai/llm/gemini.ts for why it is not simply the answer length.
+    maxOutputTokens: envInt(512, { min: 32, max: 32_768 }),
+    // 0 disables thinking. Some models (e.g. Gemini 2.5 Pro) require a minimum,
+    // so this is configurable rather than hardcoded.
+    thinkingBudget: envInt(0, { min: 0, max: 32_768 }),
     rateLimitPerMin: envInt(5, { min: 1, max: 100_000 }),
     dailyRateLimit: envOptionalInt({ min: 1, max: 10_000_000 }),
     dailyResetTz: envTimeZone("America/Los_Angeles"),
@@ -113,6 +123,15 @@ export const aiConfigSchema = z
   })
   .superRefine((value, ctx) => {
     // Provider-independent rules first: they must hold for `mock` too.
+    if (value.retryBackoffBaseMs > value.retryBackoffMaxMs) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["retryBackoffMaxMs"],
+        message:
+          "LLM_RETRY_MAX_MS must be at least LLM_RETRY_BASE_MS, otherwise the retry delay would shrink with each attempt",
+      });
+    }
+
     if (value.finalizeLeadMs > value.minLeadTimeMs) {
       ctx.addIssue({
         code: "custom",
@@ -166,6 +185,10 @@ export const AI_CONFIG_ENV_KEYS = {
   timeoutMs: "LLM_TIMEOUT_MS",
   maxRetries: "LLM_MAX_RETRIES",
   maxParseRetries: "LLM_MAX_PARSE_RETRIES",
+  retryBackoffBaseMs: "LLM_RETRY_BASE_MS",
+  retryBackoffMaxMs: "LLM_RETRY_MAX_MS",
+  maxOutputTokens: "LLM_MAX_OUTPUT_TOKENS",
+  thinkingBudget: "LLM_THINKING_BUDGET",
   rateLimitPerMin: "LLM_RATE_LIMIT_PER_MIN",
   dailyRateLimit: "LLM_RATE_LIMIT_PER_DAY",
   dailyResetTz: "LLM_DAILY_RESET_TZ",
@@ -193,6 +216,10 @@ export function parseAiConfig(env: Record<string, string | undefined>): AiConfig
     timeoutMs: env.LLM_TIMEOUT_MS,
     maxRetries: env.LLM_MAX_RETRIES,
     maxParseRetries: env.LLM_MAX_PARSE_RETRIES,
+    retryBackoffBaseMs: env.LLM_RETRY_BASE_MS,
+    retryBackoffMaxMs: env.LLM_RETRY_MAX_MS,
+    maxOutputTokens: env.LLM_MAX_OUTPUT_TOKENS,
+    thinkingBudget: env.LLM_THINKING_BUDGET,
     rateLimitPerMin: env.LLM_RATE_LIMIT_PER_MIN,
     dailyRateLimit: env.LLM_RATE_LIMIT_PER_DAY,
     dailyResetTz: env.LLM_DAILY_RESET_TZ,
