@@ -303,7 +303,7 @@ export async function processGenerate(
     return { outcome: "FALLBACK", fallbackReason: FALLBACK_THIN_DATA };
   }
 
-  // 6. Claim it. Two workers racing one draft: only one updateMany matches.
+  // 8. Claim it. Two workers racing one draft: only one updateMany matches.
   const staleBefore = new Date(Date.now() - 2 * deps.ai.timeoutMs);
   const claim = await deps.prisma.generatedDraft.updateMany({
     where: {
@@ -314,8 +314,19 @@ export async function processGenerate(
   });
 
   if (claim.count === 0) {
-    log(`draft ${draftId} is already being generated elsewhere`);
-    return { outcome: "SKIPPED_NOT_CLAIMED" };
+    // The draft is not PENDING and not a stale GENERATING. Re-read to decide:
+    // - terminal -> another worker resolved it while we were trying; SKIPPED_NOT_CLAIMED.
+    // - GENERATING and not stale -> another worker is actively generating; do not
+    //   complete the job, throw a retryable so BullMQ backs off and retries.
+    const current = await deps.prisma.generatedDraft.findUnique({ where: { id: draft.id } });
+    if (current && isTerminal(current.status)) {
+      log(`draft ${draftId} was resolved by another worker, skipping`);
+      return { outcome: "SKIPPED_NOT_CLAIMED" };
+    }
+    throw new RetryableError(
+      `draft ${draftId} is not claimable right now — another worker may be generating it`,
+      { code: "RATE_LIMITED_PER_MINUTE" }
+    );
   }
 
   const maxAttempts = job.opts.attempts ?? 1 + deps.ai.maxRetries;
@@ -348,8 +359,11 @@ async function generate(
   const limit = await deps.limiter.tryAcquire(provider, model);
 
   if (limit.status === "rate_limited") {
-    await throttle(deps, draft, limit.retryAfterMs, () =>
-      new RateLimitError(`LLM per-minute limit reached for ${provider}/${model}`)
+    await throttle(
+      deps,
+      draft,
+      limit.retryAfterMs,
+      `LLM per-minute limit reached for ${provider}/${model}`
     );
   }
 
@@ -420,8 +434,10 @@ async function generate(
  *   `FALLBACK` with the error code stored (FR-10) and the job does not retry;
  * - per-minute 429: the whole queue is rate-limited for the announced delay and
  *   the job goes back to wait **without consuming an attempt** (FR-8) — bounded by
- *   `LLM_MAX_RETRIES` hops, after which it is treated as a normal failure so a
- *   permanently throttled provider still terminates;
+ *   `LLM_MAX_RETRIES` hits on the draft, after which `throttle` throws a
+ *   `RetryableError` (consuming an attempt and applying backoff) instead of
+ *   rethrowing a `RateLimitError` as the "original" error, so a permanently
+ *   throttled provider still terminates;
  * - anything else retryable: the claim is released back to `PENDING` and the error
  *   is rethrown for BullMQ to retry with the custom backoff.
  */
@@ -475,7 +491,7 @@ async function fail(
       deps,
       draft,
       retryable.retryAfterMs ?? delayForAttempt(deps, job.attemptsMade),
-      () => retryable
+      `LLM rate limit (${retryable.code}) for ${deps.ai.provider}/${deps.llm.model}`
     );
   }
 
@@ -500,35 +516,70 @@ function delayForAttempt(deps: GenerateDeps, attemptsMade: number): number {
 }
 
 /**
+ * Clamp a throttle delay into the range the queue's Redis backend accepts.
+ *
+ * BullMQ writes the delay as a Redis PX (millisecond expire); Redis rejects a PX of
+ * 0 with `ERR invalid expire time in 'set' command` (verified against the installed
+ * BullMQ 5.81.3 -> Redis path), and arbitrarily large PX values are undesirable, so
+ * both ends are capped. The lower bound also guarantees progress: a provider that
+ * returns `retryAfterMs: 0` still yields a real pause.
+ */
+export function clampThrottleDelay(ms: number): number {
+  return Math.max(250, Math.min(300_000, Math.round(ms)));
+}
+
+/**
  * Hand the delay to the queue and go back to wait.
  *
- * `RateLimitError` moves the job back to `wait` without incrementing its attempt
- * count, so an endlessly throttled provider could otherwise keep one job alive
- * forever. The number of observed 429s is recorded on the draft (the `rateLimitHits`
- * metric, FR-16) and used as that bound: past `LLM_MAX_RETRIES` hops the caller's
- * original error is rethrown instead, which consumes an attempt and ends in a
- * fallback rather than an unbounded loop.
+ * The per-minute 429 path hands the announced delay to `queue.rateLimit` first,
+ * which sets the queue-wide limiter key so every worker pauses together, and then
+ * throws a BullMQ `RateLimitError` so the individual job goes back to `wait` without
+ * consuming an attempt. An endlessly throttled provider could otherwise keep one job
+ * alive forever, so the number of observed 429s is recorded on the draft (the
+ * `rateLimitHits` metric, FR-16) and used as a bound: past `LLM_MAX_RETRIES` hits
+ * the function throws a `RetryableError` instead of rethrowing a `RateLimitError` as
+ * the "original" error — that consumes an attempt and lets BullMQ apply the custom
+ * backoff, ending in a fallback rather than an unbounded loop.
+ *
+ * The delay passed to the queue is clamped to a sane window (see
+ * `clampThrottleDelay`): BullMQ writes it as a Redis PX, and Redis rejects a PX of 0,
+ * so we never hand a zero or absurdly large value to the queue.
  */
 async function throttle(
   deps: GenerateDeps,
   draft: DraftWithRelations,
   retryAfterMs: number,
-  original: () => Error
+  reason: string,
 ): Promise<never> {
+  // Always increment the per-draft hit counter (the status is left unchanged here).
   const updated = await deps.prisma.generatedDraft.update({
     where: { id: draft.id },
-    data: { status: "PENDING", rateLimitHits: { increment: 1 } },
+    data: { rateLimitHits: { increment: 1 } },
   });
 
+  const delay = clampThrottleDelay(retryAfterMs);
+
+  // Always hand the delay to the queue before any throw, so the queue-wide limiter
+  // is set even on the past-bound path (where we deliberately do not release the claim).
+  await deps.rateLimit?.(delay);
+
   if (updated.rateLimitHits > deps.ai.maxRetries) {
-    throw original();
+    // Past the bound: leave the claim in place (the draft stays GENERATING) so that
+    // fail()'s fallBackWithReason can update it on the last attempt. Throw a
+    // RetryableError so BullMQ consumes an attempt and applies backoff, rather than
+    // rethrowing a RateLimitError as the "original" error (which would not consume an
+    // attempt).
+    throw new RetryableError(
+      `${reason}; rate-limit hits (${updated.rateLimitHits}) exceeded the max-retry budget (${deps.ai.maxRetries}) — throwing RetryableError so BullMQ consumes an attempt and applies backoff`,
+      { code: "RATE_LIMITED_PER_MINUTE", retryAfterMs: delay }
+    );
   }
 
-  const delay = Math.max(0, Math.round(retryAfterMs));
-
-  // `queue.rateLimit` (not the deprecated `worker.rateLimit`) sets the queue-wide
-  // limiter key, so every worker pauses for the announced delay.
-  await deps.rateLimit?.(delay);
+  // Not past the bound: release the claim so the retry can re-acquire the draft.
+  await deps.prisma.generatedDraft.updateMany({
+    where: { id: draft.id, status: "GENERATING" },
+    data: { status: "PENDING" },
+  });
 
   throw new RateLimitError(`LLM rate limited, retrying in ${delay}ms`);
 }

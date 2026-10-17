@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { RetryableError } from "../ai/llm/LlmClient";
 import { isGenerateJobData } from "./generateJob";
 import {
+  clampThrottleDelay,
   emailPurposeFrom,
   FALLBACK_QUOTA_EXHAUSTED,
   FALLBACK_THIN_DATA,
@@ -96,5 +97,29 @@ describe("statuses", () => {
   it("uses the fallback reason strings the campaign queries filter on", () => {
     expect(FALLBACK_THIN_DATA).toBe("THIN_DATA");
     expect(FALLBACK_QUOTA_EXHAUSTED).toBe("QUOTA_EXHAUSTED");
+  });
+});
+
+describe("clampThrottleDelay", () => {
+  it("clamps a zero delay up to the minimum", () => {
+    expect(clampThrottleDelay(0)).toBe(250);
+  });
+
+  it("clamps a negative delay up to the minimum", () => {
+    expect(clampThrottleDelay(-500)).toBe(250);
+  });
+
+  it("clamps a sub-minimum positive delay up to the minimum", () => {
+    expect(clampThrottleDelay(100)).toBe(250);
+  });
+
+  it("passes a delay inside the range through unchanged", () => {
+    expect(clampThrottleDelay(1_000)).toBe(1_000);
+    expect(clampThrottleDelay(300000)).toBe(300_000);
+  });
+
+  it("clamps an over-maximum delay down to the maximum", () => {
+    expect(clampThrottleDelay(300_001)).toBe(300_000);
+    expect(clampThrottleDelay(999_999)).toBe(300_000);
   });
 });

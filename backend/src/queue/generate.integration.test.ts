@@ -7,10 +7,11 @@ import type { AiConfig } from "../config/ai";
 import type { CampaignStatus } from "../generated/prisma/enums";
 import { parseAiConfig } from "../config/ai";
 import { MockLlmClient } from "../ai/llm/mock";
+import { RetryableError } from "../ai/llm/LlmClient";
 import { promptFingerprint } from "../ai/identity";
 import { PROMPT_VERSION } from "../ai/prompts/personalize.v1";
 import type { LlmLimiter } from "../ai/rateLimit/llmLimiter";
-import type { GenerateDeps } from "./generateWorker";
+import type { GenerateDeps, GenerateResult } from "./generateWorker";
 import type { GenerateJobData } from "./generateJob";
 
 /**
@@ -511,27 +512,36 @@ suite("generate worker (integration)", () => {
       opts: { attempts: 1 + MAX_RETRIES },
     };
 
-    const outcomes = (
-      await Promise.all([
-        processGenerate(processedDeps(llm, ai), job),
-        processGenerate(processedDeps(llm, ai), job),
-      ])
-    ).map((result) => result.outcome);
+  const settled = await Promise.allSettled([
+    processGenerate(processedDeps(llm, ai), job),
+    processGenerate(processedDeps(llm, ai), job),
+  ]);
 
-    expect(outcomes.filter((outcome) => outcome === "READY")).toHaveLength(1);
-    // The loser either loses the claim while the winner works, or arrives after
-    // the draft has already settled.
-    expect(
-      outcomes.every(
-        (outcome) => outcome === "READY" || outcome === "SKIPPED_NOT_CLAIMED" || outcome === "SKIPPED_TERMINAL"
-      )
-    ).toBe(true);
-    expect(outcomes).toContain("SKIPPED_NOT_CLAIMED");
-    expect(llm.callCount).toBe(1);
-    expect(await prisma.generatedDraft.count({ where: { campaignId } })).toBe(1);
+  const fulfilled = settled
+    .filter((r): r is PromiseFulfilledResult<GenerateResult> => r.status === "fulfilled")
+    .map((r) => r.value.outcome);
+  const rejected = settled.filter((r) => r.status === "rejected");
 
-    const draft = await draftOf(campaignId, recipient.id);
-    expect(draft?.status).toBe("READY");
+  // Exactly one worker generates; the other either loses the claim while the winner
+  // is still generating (and throws a retryable) or arrives after the draft settled.
+  expect(llm.callCount).toBe(1);
+  expect(fulfilled.filter((o) => o === "READY")).toHaveLength(1);
+  expect(fulfilled.length + rejected.length).toBe(2);
+
+  if (rejected.length > 0) {
+    // The loser threw because the draft was GENERATING and not stale (another worker
+    // had claimed it) — the expected outcome when both processors start concurrently.
+    expect(rejected[0].reason).toBeInstanceOf(RetryableError);
+  } else {
+    // The loser returned SKIPPED_NOT_CLAIMED (the draft was already terminal when it
+    // tried to claim) — only one provider call was still made.
+    expect(fulfilled).toContain("SKIPPED_NOT_CLAIMED");
+  }
+
+  expect(await prisma.generatedDraft.count({ where: { campaignId } })).toBe(1);
+
+  const draft = await draftOf(campaignId, recipient.id);
+  expect(draft?.status).toBe("READY");
   });
 
   it("does not generate when the campaign was frozen with another prompt version", async () => {
