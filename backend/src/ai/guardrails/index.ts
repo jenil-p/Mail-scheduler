@@ -18,7 +18,14 @@ import { checkForbidden } from "./forbidden";
 import { checkUngroundedNumber } from "./numbers";
 import { checkUngroundedEntity, ALLOWED_WORDS } from "./entity";
 import { checkBannedPhrase, BANNED_PHRASES } from "./banned";
-import { checkInjection, isInjectionSuspected, recipientHasInjection } from "./injection";
+import {
+  checkInjection,
+  isInjectionSuspected,
+  recipientHasInjection,
+  INPUT_INJECTION_PATTERN,
+  OUTPUT_INJECTION_PATTERN,
+  INJECTION_PATTERN,
+} from "./injection";
 import { checkRender } from "./render";
 
 export {
@@ -31,6 +38,19 @@ export {
   BANNED_PHRASES,
   isInjectionSuspected,
   recipientHasInjection,
+  INPUT_INJECTION_PATTERN,
+  OUTPUT_INJECTION_PATTERN,
+  INJECTION_PATTERN,
+  checkEmpty,
+  checkNewline,
+  checkLength,
+  checkGreeting,
+  checkForbidden,
+  checkUngroundedNumber,
+  checkUngroundedEntity,
+  checkBannedPhrase,
+  checkInjection,
+  checkRender,
 };
 
 /**

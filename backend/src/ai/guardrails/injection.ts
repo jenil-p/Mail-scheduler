@@ -1,30 +1,38 @@
-import type { GuardrailFailure, GuardrailRecipientData } from "./types";
+import type { GuardrailFailure } from "./types";
 
-export const INJECTION_PATTERN = new RegExp(
-  [
-    "\\bignore\\s+(?:all\\s+)?(?:previous|prior|above)\\b",
-    "\\bdisregard\\b",
-    "\\bsystem\\s+prompt\\b",
-    "\\bas\\s+an\\s+ai\\b",
-    "\\blanguage\\s+model\\b",
-    "<\\/?recipient_data>",
-    "\\bassistant\\s*:",
-  ].join("|"),
+const BASE_INJECTION_PARTS = [
+  "\\bignore\\s+(?:all\\s+)?(?:previous|prior|above)\\b",
+  "\\bdisregard\\b",
+  "\\bsystem\\s+prompt\\b",
+  "<\\/?recipient_data>",
+  "\\bassistant\\s*:",
+];
+
+export const INPUT_INJECTION_PATTERN = new RegExp(
+  BASE_INJECTION_PARTS.join("|"),
   "i"
 );
 
+export const OUTPUT_INJECTION_PATTERN = new RegExp(
+  [...BASE_INJECTION_PARTS, "\\bas\\s+an\\s+ai\\b"].join("|"),
+  "i"
+);
+
+/** Kept for backward compatibility with checkInjection / isInjectionSuspected. */
+export const INJECTION_PATTERN = OUTPUT_INJECTION_PATTERN;
+
 /**
- * Returns true if text matches any prompt injection pattern.
+ * Returns true if text matches output prompt injection pattern.
  */
 export function isInjectionSuspected(text: string): boolean {
-  return INJECTION_PATTERN.test(text);
+  return OUTPUT_INJECTION_PATTERN.test(text);
 }
 
 /**
  * INJECTION_SUSPECTED: the intro matches any prompt injection pattern.
  */
 export function checkInjection(text: string): GuardrailFailure | null {
-  const match = text.match(INJECTION_PATTERN);
+  const match = text.match(OUTPUT_INJECTION_PATTERN);
   if (match) {
     return {
       code: "INJECTION_SUSPECTED",
@@ -52,5 +60,6 @@ export function recipientHasInjection(recipient: {
     recipient.note,
   ];
 
-  return fields.some((field) => Boolean(field && isInjectionSuspected(field)));
+  return fields.some((field) => Boolean(field && INPUT_INJECTION_PATTERN.test(field)));
 }
+

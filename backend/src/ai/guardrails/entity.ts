@@ -10,9 +10,16 @@ export const ALLOWED_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Normalize text using NFD and remove combining marks (\p{M}) for accent-insensitive comparison.
+ */
+function normalizeText(text: string): string {
+  return text.normalize("NFD").replace(/\p{M}/gu, "");
+}
+
+/**
  * UNGROUNDED_ENTITY: every capitalized word that is not the first word of a sentence
- * must appear (whole word, case-insensitive) in the recipient fields or in one
- * exported ALLOWED_WORDS constant. Detect capitals case-sensitively.
+ * must appear (whole word, case-insensitive, Unicode-aware) in the recipient fields
+ * or in one exported ALLOWED_WORDS constant.
  */
 export function checkUngroundedEntity(
   intro: string,
@@ -22,14 +29,22 @@ export function checkUngroundedEntity(
 
   for (const field of [recipient.first_name, recipient.company, recipient.role, recipient.note]) {
     if (!field) continue;
-    const tokens = field.toLowerCase().match(/[a-z0-9]+/g);
+    const tokens = field.match(/[\p{L}\p{N}]+/gu);
     if (tokens) {
-      for (const t of tokens) groundedWords.add(t);
+      for (const t of tokens) {
+        groundedWords.add(normalizeText(t).toLowerCase());
+      }
+    }
+    const normalizedTokens = normalizeText(field).match(/[\p{L}\p{N}]+/gu);
+    if (normalizedTokens) {
+      for (const t of normalizedTokens) {
+        groundedWords.add(t.toLowerCase());
+      }
     }
   }
 
   for (const word of ALLOWED_WORDS) {
-    groundedWords.add(word.toLowerCase());
+    groundedWords.add(normalizeText(word).toLowerCase());
   }
 
   // Split into sentences using sentence-ending punctuation followed by whitespace or end of string
@@ -43,17 +58,19 @@ export function checkUngroundedEntity(
     // Word 0 is the first word of this sentence; check only subsequent words (index >= 1)
     for (let i = 1; i < words.length; i++) {
       const raw = words[i];
-      // Strip leading/trailing punctuation and possessives (e.g. Corp's -> Corp)
+      // Strip surrounding punctuation using \p{L}\p{N} classes and possessives
       const clean = raw
-        .replace(/^[^\w]+/, "")
-        .replace(/['’]s?$/i, "")
-        .replace(/[^\w]+$/, "");
+        .replace(/^[^\p{L}\p{N}]+/u, "")
+        .replace(/[^\p{L}\p{N}]+$/u, "")
+        .replace(/['’]s?$/iu, "")
+        .replace(/[^\p{L}\p{N}]+$/u, "");
 
       if (clean.length === 0) continue;
 
-      // Detect capitals case-sensitively on the cleaned word
-      if (/^[A-Z]/.test(clean)) {
-        if (!groundedWords.has(clean.toLowerCase())) {
+      // Detect capitals with /^\p{Lu}/u
+      if (/^\p{Lu}/u.test(clean)) {
+        const normalized = normalizeText(clean).toLowerCase();
+        if (!groundedWords.has(normalized)) {
           return {
             code: "UNGROUNDED_ENTITY",
             detail: `Ungrounded entity: "${clean}"`,
@@ -65,3 +82,4 @@ export function checkUngroundedEntity(
 
   return null;
 }
+

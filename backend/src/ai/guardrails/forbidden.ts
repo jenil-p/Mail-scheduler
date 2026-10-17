@@ -1,7 +1,7 @@
 import type { GuardrailFailure } from "./types";
 
 const URL_PATTERN = /https?:\/\/|www\./i;
-const EMAIL_PATTERN = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+const EMAIL_PATTERN = /[^\s@]{1,64}@[^\s@]+\.[^\s@]+/;
 const PHONE_PATTERN = /(?:\d[\s().-]*){6}\d/;
 const MARKUP_PATTERN = /[<>{}`]/;
 
