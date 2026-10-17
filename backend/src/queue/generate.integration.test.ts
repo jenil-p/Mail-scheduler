@@ -348,6 +348,33 @@ suite("generate worker (integration)", () => {
     expect(ready.attempts).toBe(2);
   });
 
+  it("clamps a 429 with retryAfterMs = 0 to 250ms and then succeeds", async () => {
+    const ai = aiConfig();
+    const campaignId = await createCampaign({ recipients: [{}] });
+    const [recipient] = await recipientsOf(campaignId);
+
+    await enqueue(campaignId, recipient.id, ai);
+
+    const llm = new MockLlmClient({
+      script: [
+        { kind: "rate_limited", retryAfterMs: 0 },
+        { kind: "success", intro: "Clamped retry success" },
+      ],
+    });
+
+    startWorker(llm, ai);
+
+    const ready = await waitFor(async () => {
+      const draft = await draftOf(campaignId, recipient.id);
+      return draft?.status === "READY" ? draft : undefined;
+    }, "the draft to be READY after retryAfterMs = 0");
+
+    expect(llm.callCount).toBe(2);
+    expect(ready.aiIntro).toBe("Clamped retry success");
+    expect(ready.rateLimitHits).toBe(1);
+    expect(ready.attempts).toBe(2);
+  });
+
   it("falls back to the plain template after the retries are exhausted", async () => {
     const ai = aiConfig();
     const campaignId = await createCampaign({ recipients: [{}] });
