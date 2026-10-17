@@ -172,14 +172,14 @@ export function parseRecipientsCsv(input: string | Buffer, options: CsvImportOpt
     };
   }
 
-  const reserved = RESERVED_COLUMNS.find((name) => columnIndex.has(name));
-  if (reserved) {
+  const reservedColumns = RESERVED_COLUMNS.filter((name) => columnIndex.has(name));
+  if (reservedColumns.length > 0) {
     return {
       ok: false,
       code: "RESERVED_COLUMN",
       message:
-        `The column "${reserved}" is reserved and cannot come from the CSV: ` +
-        `{{${reserved}}} is filled from the campaign itself. Rename or remove that column.`,
+        `The following columns are reserved and cannot come from the CSV: ${reservedColumns.map((name) => `"${name}"`).join(", ")} — ` +
+        `{{${reservedColumns.join("}}, {{")}}} is filled from the campaign itself. Rename or remove those columns.`,
     };
   }
 

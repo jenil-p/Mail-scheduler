@@ -29,6 +29,8 @@ describe("parseAiConfig", () => {
       recipientFieldMaxLength: 200,
       recipientNoteMaxLength: 500,
       introMaxChars: 240,
+      templateBodyMaxLength: 20_000,
+      templateSubjectMaxLength: 300,
       // Phase 3: generate-queue retry delays and the Gemini output allowance.
       retryBackoffBaseMs: 2_000,
       retryBackoffMaxMs: 60_000,

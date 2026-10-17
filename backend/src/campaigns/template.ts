@@ -20,6 +20,8 @@ import {
   type TemplateValues,
 } from "./render";
 
+import { config } from "../config";
+
 /** Always available, whatever the CSV contains (spec FR-3). */
 export const BUILT_IN_VARIABLES = [
   "first_name",
@@ -36,6 +38,7 @@ export const UNSUBSCRIBE_VARIABLE = "unsubscribe_link";
 export type TemplateValidationCode =
   | "EMPTY_SUBJECT"
   | "EMPTY_BODY"
+  | "TEMPLATE_TOO_LONG"
   | "MALFORMED_PLACEHOLDER"
   | "UNKNOWN_VARIABLE"
   | "AI_SLOT_COUNT"
@@ -120,6 +123,23 @@ export function validateTemplate(input: TemplateValidationInput): TemplateValida
   const errors: TemplateValidationIssue[] = [];
   const warnings: TemplateWarning[] = [];
   const warningsSeen = new Set<string>();
+
+  // Size caps checked BEFORE any regex work on the text (catches巨型 templates early).
+  if (input.subject.length > config.ai.templateSubjectMaxLength) {
+    errors.push({
+      code: "TEMPLATE_TOO_LONG",
+      field: "subject",
+      message: `Subject is longer than the ${config.ai.templateSubjectMaxLength} character limit`,
+    });
+  }
+
+  if (input.body.length > config.ai.templateBodyMaxLength) {
+    errors.push({
+      code: "TEMPLATE_TOO_LONG",
+      field: "body",
+      message: `Body is longer than the ${config.ai.templateBodyMaxLength} character limit`,
+    });
+  }
 
   if (input.subject.trim() === "") {
     errors.push({ code: "EMPTY_SUBJECT", field: "subject", message: "Subject must not be empty" });

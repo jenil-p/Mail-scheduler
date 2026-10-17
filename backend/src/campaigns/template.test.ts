@@ -178,6 +178,68 @@ describe("validateTemplate", () => {
     });
   });
 
+  describe("template size caps", () => {
+    it("rejects a body longer than TEMPLATE_BODY_MAX_LENGTH before any regex work", () => {
+      const longBody = "x".repeat(20_001) + "\n\n{{unsubscribe_link}}";
+      const { errors } = validate({
+        body: longBody,
+        aiEnabled: false,
+      });
+      expect(errors).toEqual([
+        expect.objectContaining({ code: "TEMPLATE_TOO_LONG", field: "body" }),
+      ]);
+    });
+
+    it("rejects a subject longer than TEMPLATE_SUBJECT_MAX_LENGTH", () => {
+      const longSubject = "x".repeat(301);
+      const { errors } = validate({
+        subject: longSubject,
+        body: "Hi {{first_name}}\n\n{{ai_intro}}\n\n{{unsubscribe_link}}",
+        aiEnabled: true,
+      });
+      expect(errors).toEqual([
+        expect.objectContaining({ code: "TEMPLATE_TOO_LONG", field: "subject" }),
+      ]);
+    });
+
+    it("accepts templates at the exact limit", () => {
+      // Body must be <= TEMPLATE_BODY_MAX_LENGTH including the required unsubscribe_link.
+      // "\n\n{{unsubscribe_link}}" = 2 + 20 = 22 chars, so 20000 - 22 = 19978 x's.
+      const body = "x".repeat(19_978) + "\n\n{{unsubscribe_link}}";
+      expect(
+        validate({
+          body,
+          aiEnabled: false,
+        }).errors
+      ).toEqual([]);
+    });
+  });
+
+  describe("unknown variables from extra columns only", () => {
+    // When csvVariables comes from extraColumns only (the Phase 7 caller passes
+    // csvVariables = extraColumns), built-in variables not in the CSV are unknown.
+    it("rejects {{email}} as UNKNOWN_VARIABLE when it is not a CSV column", () => {
+      const { errors } = validate({
+        body: "Hi {{email}}\n\n{{ai_intro}}\n\n{{unsubscribe_link}}",
+        csvVariables: ["first_name", "company"], // email is NOT in the CSV
+        aiEnabled: true,
+      });
+      expect(errors).toEqual([
+        expect.objectContaining({ code: "UNKNOWN_VARIABLE", field: "body" }),
+      ]);
+      expect(errors[0].message).toContain("email");
+    });
+
+    it("does not reject {{email}} when it is a CSV column", () => {
+      const { errors } = validate({
+        body: "Hi {{email}}\n\n{{ai_intro}}\n\n{{unsubscribe_link}}",
+        csvVariables: ["email", "first_name"],
+        aiEnabled: true,
+      });
+      expect(errors).toEqual([]);
+    });
+  });
+
   describe("warnings", () => {
     // Real value maps always carry the campaign links (see buildTemplateValues).
     const recipientValues = [

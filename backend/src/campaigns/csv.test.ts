@@ -330,6 +330,17 @@ describe("header normalization", () => {
     }
   );
 
+  it("reports ALL reserved columns found in a single RESERVED_COLUMN message", () => {
+    const result = parseRecipientsCsv("email,ai_intro,link,unsubscribe_link\na@example.com,x,y,z\n", options);
+
+    expect(result).toMatchObject({ ok: false, code: "RESERVED_COLUMN" });
+    if (!result.ok) {
+      expect(result.message).toContain("ai_intro");
+      expect(result.message).toContain("link");
+      expect(result.message).toContain("unsubscribe_link");
+    }
+  });
+
   it("still reports a missing email column when both problems are present", () => {
     const result = parseRecipientsCsv("name,link\nAna,https://x\n", options);
 

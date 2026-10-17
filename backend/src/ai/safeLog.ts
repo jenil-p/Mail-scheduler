@@ -11,9 +11,13 @@
  * draft cannot accidentally include the recipient it belongs to.
  */
 
-// Deliberately excludes the punctuation that separates list items, so a log line
-// with several addresses is redacted as several addresses rather than one blob.
-const EMAIL_PATTERN = /[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g;
+// Matches something that looks like an email address: a local part (capped at
+// 64 chars, the RFC 5321 limit), an @, a domain part, a dot, and a TLD. Capping
+// the local part prevents polynomial backtracking on adversarial input like
+// 20,000 chars with no @ — the greedy class gives up at most 64 chars before the
+// engine advances. The separator set deliberately excludes punctuation that
+// separates list items, so a log line with several addresses is redacted as several.
+const EMAIL_PATTERN = /[^\s<>()"',;:]{1,64}@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g;
 
 /** How much of an error message is kept. Enough to act on, too short to leak. */
 export const MAX_LOGGED_MESSAGE_CHARS = 300;

@@ -120,6 +120,8 @@ export const aiConfigSchema = z
     recipientFieldMaxLength: envInt(200, { min: 1, max: 10_000 }),
     recipientNoteMaxLength: envInt(500, { min: 1, max: 10_000 }),
     introMaxChars: envInt(240, { min: 1, max: 2_000 }),
+    templateBodyMaxLength: envInt(20_000, { min: 1, max: 1_000_000 }),
+    templateSubjectMaxLength: envInt(300, { min: 1, max: 10_000 }),
   })
   .superRefine((value, ctx) => {
     // Provider-independent rules first: they must hold for `mock` too.
@@ -201,6 +203,8 @@ export const AI_CONFIG_ENV_KEYS = {
   recipientFieldMaxLength: "RECIPIENT_FIELD_MAX_LENGTH",
   recipientNoteMaxLength: "RECIPIENT_NOTE_MAX_LENGTH",
   introMaxChars: "AI_INTRO_MAX_CHARS",
+  templateBodyMaxLength: "TEMPLATE_BODY_MAX_LENGTH",
+  templateSubjectMaxLength: "TEMPLATE_SUBJECT_MAX_LENGTH",
 } as const satisfies Record<keyof AiConfig, string>;
 
 /**
@@ -232,6 +236,8 @@ export function parseAiConfig(env: Record<string, string | undefined>): AiConfig
     recipientFieldMaxLength: env.RECIPIENT_FIELD_MAX_LENGTH,
     recipientNoteMaxLength: env.RECIPIENT_NOTE_MAX_LENGTH,
     introMaxChars: env.AI_INTRO_MAX_CHARS,
+    templateBodyMaxLength: env.TEMPLATE_BODY_MAX_LENGTH,
+    templateSubjectMaxLength: env.TEMPLATE_SUBJECT_MAX_LENGTH,
   });
 
   if (!result.success) {

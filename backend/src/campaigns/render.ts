@@ -64,16 +64,33 @@ export interface TemplateScan {
 
 const VARIABLE_NAME = "[A-Za-z0-9_]+";
 
-/** `{{name}}` or `{{name|default text}}` — the default may not contain braces or `|`. */
+/**
+ * `{{name}}` or `{{name|default text}}` — the default is 1-50 chars, may not
+ * contain `{`, `}`, `|`.
+ *
+ * The regex is written to avoid polynomial backtracking on adversarial input like
+ * "{{a|" + 20,000 spaces with no "}}". The key: the default text `[^{}|\s]` and
+ * its interior `[^{}|]` exclude whitespace, so `\s*` (which matches whitespace)
+ * and the character class never compete for the same characters. A greedy
+ * `[^{}|]{0,48}` flanked by `[^{}|\s]` on both ends means the engine never
+ * backtracks across the `\s*` boundaries.
+ *
+ * Defaults containing `|` or longer than DEFAULT_TEXT_MAX_LENGTH are matched by
+ * this regex but rejected later by scanTemplate/validateTemplate.
+ */
 function placeholderRegex(): RegExp {
+  // {{name}} or {{name|default}} where default doesn't start/end with whitespace
+  // or braces/pipe. Interior whitespace is allowed (e.g. "Acme Corp").
   return new RegExp(
-    `\\{\\{\\s*(${VARIABLE_NAME})\\s*(?:\\|\\s*([^{}|]{1,${DEFAULT_TEXT_MAX_LENGTH}}?)\\s*)?\\}\\}`,
+    `\\{\\{\\s*(${VARIABLE_NAME})\\s*(?:\\|\\s*([^{}|\\s][^{}|]{0,48}[^{}|\\s]?)\\s*)?\\}\\}`,
     "g"
   );
 }
 
 /** Any `{{...}}` group, well-formed or not. */
 function groupRegex(): RegExp {
+  // No backtracking: `[^{}]*` is matched greedily but `}}` is a fixed 2-char
+  // terminator, so each `{{` finds the next `}}` with no ambiguity.
   return /\{\{([^{}]*)\}\}/g;
 }
 
@@ -85,12 +102,17 @@ export function normalizeNewlines(value: string): string {
 /**
  * Classify every placeholder in a template: which variables it uses, their
  * defaults, and which `{{...}}` groups are malformed.
+ *
+ * Placeholder names are untrusted input (they come from CSV headers). We use
+ * arrays and Maps keyed by numeric indices or pre-validated strings — never
+ * plain objects keyed by user-controlled names — so keys like "constructor",
+ * "toString" or "__proto__" cannot interfere with object prototype lookups.
  */
 export function scanTemplate(template: string): TemplateScan {
   const text = normalizeNewlines(template);
   const variables: string[] = [];
-  const occurrences: Record<string, number> = {};
-  const defaults: Record<string, string> = {};
+  const occurrences = new Map<string, number>();
+  const defaults = new Map<string, string>();
   const placeholders: Placeholder[] = [];
 
   const covered = new Array<boolean>(text.length).fill(false);
@@ -102,10 +124,20 @@ export function scanTemplate(template: string): TemplateScan {
     const defaultText = match[2];
     const key = name.toLowerCase();
 
+    // Validate the default: must be 1-50 chars and may not contain {, } or |.
+    // The regex matches anything but braces, so | in a default is caught here.
+    if (
+      defaultText !== undefined &&
+      (defaultText.length > DEFAULT_TEXT_MAX_LENGTH || defaultText.includes("|"))
+    ) {
+      // Do not mark this group as covered: it stays in `invalid` via groupRegex.
+      continue;
+    }
+
     placeholders.push({ name, defaultText, raw });
     if (!variables.includes(name)) variables.push(name);
-    occurrences[key] = (occurrences[key] ?? 0) + 1;
-    if (defaultText !== undefined && defaults[key] === undefined) defaults[key] = defaultText;
+    occurrences.set(key, (occurrences.get(key) ?? 0) + 1);
+    if (defaultText !== undefined && !defaults.has(key)) defaults.set(key, defaultText);
 
     for (let i = match.index; i < match.index + raw.length; i++) covered[i] = true;
   }
@@ -126,10 +158,19 @@ export function scanTemplate(template: string): TemplateScan {
   }
   stripped += text.slice(cursor);
 
+  // Use Object.create(null) so keys like "__proto__" and "toString" don't
+  // intersect with Object.prototype — the caller may read these with bracket
+  // notation from user-controlled placeholder names.
+  const occurrencesRecord = Object.create(null) as Record<string, number>;
+  for (const [key, value] of occurrences) occurrencesRecord[key] = value;
+
+  const defaultsRecord = Object.create(null) as Record<string, string>;
+  for (const [key, value] of defaults) defaultsRecord[key] = value;
+
   return {
     variables,
-    occurrences,
-    defaults,
+    occurrences: occurrencesRecord,
+    defaults: defaultsRecord,
     placeholders,
     invalid,
     malformed: [...new Set(stripped.match(/\{\{|\}\}/g) ?? [])],
@@ -228,6 +269,9 @@ function substitute(
  * A line that holds nothing but the AI slot. The trailing newline is consumed with
  * it, so removing the line leaves its surrounding structure intact; the prefix
  * newline is kept (and returned) so line boundaries survive the replacement.
+ *
+ * Written without overlapping whitespace ranges so a template of many blank lines
+ * with no `{{ai_intro}}` is scanned in linear time.
  */
 const SLOT_ONLY_LINE_RE = /(^|\n)[ \t]*\{\{\s*ai_intro\s*\}\}[ \t]*\n?/gi;
 
@@ -256,17 +300,27 @@ function collapseSlotGap(text: string): string {
 /**
  * Render the body: normalise line endings, escape everything, drop an empty
  * `{{ai_intro}}` line without leaving a gap, and turn newlines into `<br>`.
+ *
+ * Values from the CSV (and the AI intro) are normalised too, so a CRLF inside a
+ * CSV cell cannot leave a stray `\r` in the output (NFR-3).
  */
 export function renderBody(template: string, values: TemplateValues): string {
   const text = normalizeNewlines(template);
   const map = toValueMap(values);
   const introEmpty = isEmpty(map.get(AI_SLOT_VARIABLE));
 
+  // Normalise newlines in every substituted value so CRLF inside a CSV cell
+  // cannot leave `\r` in the output.
+  const normalisedMap = new Map<string, string | undefined>();
+  for (const [key, value] of map.entries()) {
+    normalisedMap.set(key, value !== undefined ? normalizeNewlines(value) : undefined);
+  }
+
   const { text: prepared, removed } = introEmpty
     ? removeSlotOnlyLines(text)
     : { text, removed: false };
 
-  const escaped = substitute(prepared, map, escapeValueForBody);
+  const escaped = substitute(prepared, normalisedMap, escapeValueForBody);
   const withoutGap = removed ? collapseSlotGap(escaped) : escaped;
 
   return withoutGap.replace(/\n/g, "<br>");
@@ -276,11 +330,20 @@ export function renderBody(template: string, values: TemplateValues): string {
  * Render the subject: plain-text substitution (no HTML escaping — the subject is
  * a mail header, not markup) with newlines flattened so a value cannot inject
  * extra headers. Links stay plain text here.
+ *
+ * Values are normalised too, so CRLF inside a CSV cell cannot inject extra
+ * headers or leave `\r` in the subject.
  */
 export function renderSubject(template: string, values: TemplateValues): string {
   const text = normalizeNewlines(template);
 
-  return normalizeSubject(substitute(text, toValueMap(values), (value) => value));
+  const map = toValueMap(values);
+  const normalisedMap = new Map<string, string | undefined>();
+  for (const [key, value] of map.entries()) {
+    normalisedMap.set(key, value !== undefined ? normalizeNewlines(value) : undefined);
+  }
+
+  return normalizeSubject(substitute(text, normalisedMap, (value) => value));
 }
 
 export interface RenderEmailInput {

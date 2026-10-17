@@ -275,6 +275,92 @@ describe("renderSubject", () => {
   });
 });
 
+describe("regex timing", () => {
+  it("scans a template of {{a| plus 20,000 spaces in well under 100ms", () => {
+    // No closing }}: the {{ is malformed, not an invalid group.
+    const template = "{{a|" + " ".repeat(20_000);
+    const start = performance.now();
+    const scan = scanTemplate(template);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(100);
+    expect(scan.variables).toEqual([]);
+    expect(scan.malformed).toEqual(["{{"]);
+  });
+
+  it("scans {{a| repeated 5,000 times in well under 100ms", () => {
+    const template = ("{{a|" as string).repeat(5_000);
+    const start = performance.now();
+    const scan = scanTemplate(template);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(100);
+    expect(scan.variables).toEqual([]);
+    expect(scan.placeholders).toHaveLength(0);
+  });
+
+  it("scans 20,000 {{ repetitions in well under 100ms", () => {
+    const template = "{{ ".repeat(20_000);
+    const start = performance.now();
+    const scan = scanTemplate(template);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(100);
+  });
+});
+
+describe("scanTemplate with prototype-shaped names", () => {
+  // Placeholder names are untrusted (they come from CSV headers). Using
+  // Object.create(null) in scanTemplate means keys like "constructor",
+  // "toString" and "__proto__" are ordinary properties, not prototype lookups.
+
+  function occ(map: Array<[string, number]>): Record<string, number> {
+    const obj = Object.create(null) as Record<string, number>;
+    for (const [k, v] of map) obj[k] = v;
+    return obj;
+  }
+
+  it("handles {{constructor}} without throwing or miscounting", () => {
+    const scan = scanTemplate("{{constructor}}");
+    expect(scan.variables).toEqual(["constructor"]);
+    expect(scan.occurrences).toEqual(occ([["constructor", 1]]));
+    expect(renderBody("Hi {{constructor}}", { constructor: "safe" })).toBe("Hi safe");
+  });
+
+  it("handles {{toString}} without throwing or miscounting", () => {
+    const scan = scanTemplate("{{toString}}");
+    expect(scan.variables).toEqual(["toString"]);
+    // Variable names are lowercased for case-insensitive matching.
+    expect(scan.occurrences).toEqual(occ([["tostring", 1]]));
+    expect(renderBody("Hi {{toString}}", { toString: "safe" })).toBe("Hi safe");
+  });
+
+  it("handles {{__proto__}} without throwing or miscounting", () => {
+    const scan = scanTemplate("{{__proto__}}");
+    expect(scan.variables).toEqual(["__proto__"]);
+    expect(scan.occurrences).toEqual(occ([["__proto__", 1]]));
+    // Build the values map with Object.create(null) and direct assignment so
+    // __proto__ is an own property, not a prototype mutation.
+    const values = Object.create(null) as Record<string, string>;
+    values.__proto__ = "safe";
+    expect(renderBody("Hi {{__proto__}}", values)).toBe("Hi safe");
+  });
+});
+
+
+describe("renderBody normalizes newlines in substituted values", () => {
+  it("removes CRLF from a CSV value so no carriage return survives in the output", () => {
+    const body = renderBody("Hi {{first_name}}, bye", {
+      first_name: "Raj\r\nExtra",
+    });
+    expect(body).not.toContain("\r");
+    expect(body).toBe("Hi Raj<br>Extra, bye");
+  });
+
+  it("normalises lone CR in a value", () => {
+    const body = renderBody("Hi {{first_name}}", { first_name: "A\rB" });
+    expect(body).not.toContain("\r");
+    expect(body).toBe("Hi A<br>B");
+  });
+});
+
 describe("renderEmail", () => {
   it("renders the approved sample from the spec (section 3) for a rich-data recipient", () => {
     const { subject, body } = renderEmail({
