@@ -560,6 +560,69 @@ suite("generate worker (integration)", () => {
     expect(draft?.status).toBe("PENDING"); // never claimed
   });
 
+  it("pauses the campaign when the stored model differs from this build's client", async () => {
+    const ai = aiConfig();
+    const campaignId = await createCampaign({
+      recipients: [{}],
+      model: "other-model",
+    });
+    const [recipient] = await recipientsOf(campaignId);
+
+    await enqueue(campaignId, recipient.id, ai);
+
+    const llm = new MockLlmClient();
+    startWorker(llm, ai);
+
+    const campaign = await waitFor(async () => {
+      const row = await prisma.campaign.findUnique({ where: { id: campaignId } });
+      return row?.status === "PAUSED" ? row : undefined;
+    }, "the campaign to pause on model mismatch");
+
+    expect(llm.callCount).toBe(0);
+    expect(campaign.errorMessage).toContain("other-model");
+    expect(campaign.errorMessage).toContain("mock-model");
+
+    const draft = await draftOf(campaignId, recipient.id);
+    expect(draft?.status).toBe("PENDING"); // never claimed
+  });
+
+  it("skips a draft whose promptVersion does not match the campaign fingerprint", async () => {
+    const ai = aiConfig();
+    const campaignId = await createCampaign({ recipients: [{}] });
+    const [recipient] = await recipientsOf(campaignId);
+
+    // Insert a draft under a stale fingerprint directly, as if it were created
+    // before a regenerate and never re-enqueued under the new fingerprint.
+    const staleDraftId = randomUUID();
+    await prisma.generatedDraft.create({
+      data: {
+        id: staleDraftId,
+        campaignId,
+        recipientId: recipient.id,
+        status: "PENDING",
+        promptVersion: "stale-fingerprint-not-matching",
+        subject: "",
+        body: "",
+        isSample: false,
+      },
+    });
+
+    const llm = new MockLlmClient();
+    startWorker(llm, ai);
+
+    const result = await processGenerate(processedDeps(llm, ai), {
+      data: { draftId: staleDraftId, campaignId, recipientId: recipient.id, isSample: false },
+      attemptsMade: 0,
+      opts: { attempts: 1 + MAX_RETRIES },
+    });
+
+    expect(result.outcome).toBe("SKIPPED_STALE");
+    expect(llm.callCount).toBe(0);
+
+    const draft = await prisma.generatedDraft.findUnique({ where: { id: staleDraftId } });
+    expect(draft?.status).toBe("PENDING"); // skipped, not claimed, not fallen back
+  });
+
   it("pauses the campaign on a rejected API key and falls the draft back", async () => {
     const ai = aiConfig();
     const campaignId = await createCampaign({ recipients: [{}] });
