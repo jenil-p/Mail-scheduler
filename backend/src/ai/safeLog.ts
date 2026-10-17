@@ -14,17 +14,16 @@
 // Matches something that looks like an email address: a local part (capped at
 // 64 chars, the RFC 5321 limit), an @, a domain part, a dot, and a TLD.
 // "@" is excluded from every character class so a bucket-of-addresses string like
-// "a@a@a@..." stays linear instead of driving polynomial backtracking, and long
-// provider errors are capped to a fixed length before the regex is ever run.
+// "a@a@a@..." stays linear instead of driving polynomial backtracking.
 const EMAIL_PATTERN = /[^\s<>()"',;:@]{1,64}@[^\s<>()"',;:@]+\.[^\s<>()"',;:@]+/g;
 
 /** How much of an error message is kept. Enough to act on, too short to leak. */
 export const MAX_LOGGED_MESSAGE_CHARS = 300;
 
 /**
- * Amount of input scanned for addresses. Provider error text can be very long and
- * is only useful up to a point, so anything past this is discarded before the
- * regex runs. This is the cap the timing test exercises.
+ * Input is truncated before the regex so a huge provider error stays cheap and a
+// provider that echoes the request back inside its error message cannot drive the
+// regex across a huge input.
  */
 export const MAX_INPUT_CHARS = 2000;
 
