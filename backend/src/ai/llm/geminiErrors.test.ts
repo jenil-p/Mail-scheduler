@@ -62,7 +62,7 @@ describe("analyzeGeminiError", () => {
 
     expect(analysis.scope).toBe("per_day");
     expect(analysis.status).toBe("RESOURCE_EXHAUSTED");
-    expect(analysis.retryAfterMs).toBe(31_000);
+    expect(analysis.retryAfterMs).toBe(31_250);
     expect(analysis.quotaIds).toContain("GenerateRequestsPerDayPerProjectPerModel-FreeTier");
   });
 
@@ -91,18 +91,45 @@ describe("analyzeGeminiError", () => {
     );
 
     expect(analysis.scope).toBe("per_minute");
-    expect(analysis.retryAfterMs).toBe(7_500);
+    expect(analysis.retryAfterMs).toBe(7_750);
   });
 
-  it("prefers the day limit when a body mentions both", () => {
+  it("prefers the day limit when a body mentions both in quotaIds", () => {
     const analysis = analyzeGeminiError(
       429,
       body({
-        message: "Quota exceeded for metric: requests, limit: 5 per minute and 50 per day",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+            violations: [
+              { quotaId: "RequestsPerMinute" },
+              { quotaId: "RequestsPerDay" },
+            ],
+          },
+        ],
       })
     );
 
     expect(analysis.scope).toBe("per_day");
+  });
+
+  it("decides ONLY from structured quotaIds when present, ignoring conflicting message text", () => {
+    const analysis = analyzeGeminiError(
+      429,
+      body({
+        message: "Quota exceeded per day",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+            violations: [
+              { quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" },
+            ],
+          },
+        ],
+      })
+    );
+
+    expect(analysis.scope).toBe("per_minute");
   });
 
   it("falls back to the message text when there are no structured details", () => {
@@ -125,6 +152,72 @@ describe("analyzeGeminiError", () => {
     expect(analysis.message).toContain("[email]");
     expect(analysis.message).not.toContain("priya@example.com");
     expect(analysis.scope).toBe("per_minute");
+  });
+
+  const VERBATIM_429 = JSON.stringify({
+    error: {
+      code: 429,
+      message:
+        "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-3.8-flash\nPlease retry in 1.855281027s.",
+      status: "RESOURCE_EXHAUSTED",
+      details: [
+        {
+          "@type": "type.googleapis.com/google.rpc.Help",
+          links: [
+            {
+              description: "Learn more about Gemini API quotas",
+              url: "https://ai.google.dev/gemini-api/docs/rate-limits",
+            },
+          ],
+        },
+        {
+          "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+          violations: [
+            {
+              quotaMetric:
+                "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+              quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+              quotaDimensions: { model: "gemini-3.8-flash", location: "global" },
+              quotaValue: "5",
+            },
+          ],
+        },
+        { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "1s" },
+      ],
+    },
+  });
+
+  it("correctly analyzes the verbatim 429 fixture with max(retryDelay, message seconds) + 250ms", () => {
+    const analysis = analyzeGeminiError(429, VERBATIM_429);
+    expect(analysis.scope).toBe("per_minute");
+    // max(1000ms, 1855ms) + 250ms = 2105ms
+    expect(analysis.retryAfterMs).toBe(2105);
+    expect(analysis.quotaIds).toContain(
+      "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"
+    );
+
+    const error = classifyGeminiError(429, VERBATIM_429);
+    expect(error).toBeInstanceOf(RetryableError);
+    expect(error.code).toBe("RATE_LIMITED_PER_MINUTE");
+    expect(error.retryAfterMs).toBe(2105);
+  });
+
+  it("recognises a daily quota error from the fixture with GenerateRequestsPerDay", () => {
+    // Note: The daily quota failure shape (e.g. GenerateRequestsPerDayPerProjectPerModel-FreeTier)
+    // is an assumption by analogy with the observed per-minute shape, not directly observed.
+    const DAILY_FIXTURE = VERBATIM_429.replace(
+      "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+      "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+    );
+
+    const analysis = analyzeGeminiError(429, DAILY_FIXTURE);
+    expect(analysis.scope).toBe("per_day");
+    expect(analysis.retryAfterMs).toBe(2105);
+
+    const error = classifyGeminiError(429, DAILY_FIXTURE);
+    expect(error).toBeInstanceOf(QuotaExhaustedError);
+    expect(error.code).toBe("QUOTA_EXHAUSTED");
+    expect(error.retryAfterMs).toBe(2105);
   });
 });
 
@@ -150,7 +243,7 @@ describe("classifyGeminiError", () => {
 
     expect(error).toBeInstanceOf(RetryableError);
     expect(error.code).toBe("RATE_LIMITED_PER_MINUTE");
-    expect(error.retryAfterMs).toBe(4_000);
+    expect(error.retryAfterMs).toBe(4_250);
   });
 
   it("never leaks the raw body into the error message", () => {

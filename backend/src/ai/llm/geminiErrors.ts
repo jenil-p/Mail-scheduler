@@ -44,7 +44,7 @@ export interface GeminiErrorAnalysis {
   message: string;
 }
 
-const DAY_MARKERS = [/per[_\s-]?day/i, /perday/i, /\brpd\b/i, /daily/i, /requests?\s+per\s+day/i];
+const DAY_MARKERS = [/per[_\s-]?day/i, /perday/i, /\brpd\b/i, /requests?\s+per\s+day/i];
 const MINUTE_MARKERS = [
   /per[_\s-]?minute/i,
   /perminute/i,
@@ -132,14 +132,13 @@ export function analyzeGeminiError(status: number, rawMessage: string): GeminiEr
   const envelope = errorEnvelope(rawMessage);
 
   const quotaIds: string[] = [];
-  const texts: string[] = [rawMessage];
-  let retryAfterMs: number | undefined;
+  let retryInfoDelay: number | undefined;
+  let envelopeDelay: number | undefined;
   let scope: GeminiLimitScope = "unknown";
   let reason: string | undefined;
 
   const envelopeStatus = envelope ? firstString(envelope.status) : undefined;
   const envelopeMessage = envelope ? firstString(envelope.message) : undefined;
-  if (envelopeMessage) texts.push(envelopeMessage);
 
   // A plain (non-JSON) body: keep the text, and try the Retry-After style fields
   // that some gateways put at the top level.
@@ -158,14 +157,12 @@ export function analyzeGeminiError(status: number, rawMessage: string): GeminiEr
             const metric = firstString(violation.quotaMetric, violation.quota_metric);
             if (id) quotaIds.push(id);
             if (metric) quotaIds.push(metric);
-            const violationText = firstString(violation.description) ?? "";
-            if (violationText) texts.push(`${id ?? ""} ${violationText}`);
           }
         }
       }
 
       if (kind.endsWith("retryinfo")) {
-        retryAfterMs ??= parseDurationMs(entry.retryDelay ?? entry.retry_delay);
+        retryInfoDelay ??= parseDurationMs(entry.retryDelay ?? entry.retry_delay);
       }
 
       if (kind.endsWith("errorinfo")) {
@@ -175,23 +172,53 @@ export function analyzeGeminiError(status: number, rawMessage: string): GeminiEr
   }
 
   if (envelope) {
-    retryAfterMs ??= parseDurationMs(envelope.retryDelay ?? envelope.retry_delay);
-    retryAfterMs ??= parseDurationMs(envelope.retryAfter ?? envelope.retry_after);
+    envelopeDelay ??= parseDurationMs(envelope.retryDelay ?? envelope.retry_delay);
+    envelopeDelay ??= parseDurationMs(envelope.retryAfter ?? envelope.retry_after);
     reason ??= firstString(envelope.reason);
   }
 
-  const haystack = `${quotaIds.join(" ")} ${texts.join(" ")}`;
-
-  // Daily first: when a body mentions both, the day limit is the terminal one.
-  if (DAY_MARKERS.some((marker) => marker.test(haystack))) {
-    scope = "per_day";
-  } else if (MINUTE_MARKERS.some((marker) => marker.test(haystack))) {
-    scope = "per_minute";
+  // 1. Scope: if the structured quotaIds/quotaMetric are present, decide from them ONLY
+  // (PerDay / per_day -> per_day; PerMinute -> per_minute; a body with both -> per_day).
+  // Use free-text markers only when no quota ids exist, and only on the provider's message field,
+  // never on the whole raw JSON.
+  // Note: The daily quota failure shape (e.g. GenerateRequestsPerDayPerProjectPerModel-FreeTier)
+  // is an assumption by analogy with the observed per-minute shape, not directly observed.
+  if (quotaIds.length > 0) {
+    const quotaText = quotaIds.join(" ");
+    const hasDay = DAY_MARKERS.some((marker) => marker.test(quotaText));
+    const hasMinute = MINUTE_MARKERS.some((marker) => marker.test(quotaText));
+    if (hasDay) {
+      scope = "per_day";
+    } else if (hasMinute) {
+      scope = "per_minute";
+    }
+  } else {
+    const providerMessage = envelopeMessage ?? (rawMessage.trim().startsWith("{") ? "" : rawMessage);
+    if (providerMessage) {
+      const hasDay = DAY_MARKERS.some((marker) => marker.test(providerMessage));
+      const hasMinute = MINUTE_MARKERS.some((marker) => marker.test(providerMessage));
+      if (hasDay) {
+        scope = "per_day";
+      } else if (hasMinute) {
+        scope = "per_minute";
+      }
+    }
   }
 
   // 429s are per-minute unless proven otherwise; a non-429 with a day marker is
   // still reported as daily so metrics do not mislabel it.
   if (scope === "unknown" && status === 429) scope = "per_minute";
+
+  // 2. Retry delay: use max(RetryInfo.retryDelay, seconds parsed from "Please retry in Ns") + 250 ms.
+  const msgForRetry = envelopeMessage ?? rawMessage;
+  const retryInMatch = /Please retry in\s+([\d.]+)\s*s/i.exec(msgForRetry);
+  const messageSecondsMs = retryInMatch ? Math.round(Number(retryInMatch[1]) * 1000) : undefined;
+  const baseDelay = retryInfoDelay ?? envelopeDelay;
+
+  let retryAfterMs: number | undefined;
+  if (baseDelay !== undefined || messageSecondsMs !== undefined) {
+    retryAfterMs = Math.max(baseDelay ?? 0, messageSecondsMs ?? 0) + 250;
+  }
 
   return {
     scope,
