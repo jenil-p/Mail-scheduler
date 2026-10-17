@@ -43,7 +43,7 @@ import {
   type LlmClient,
 } from "../ai/llm/LlmClient";
 import { createJitteredBackoffStrategy } from "../ai/llm/backoff";
-import { buildPersonalizePrompt, EMAIL_PURPOSE_MAX_CHARS, PROMPT_VERSION } from "../ai/prompts/personalize.v1";
+import { buildPersonalizePrompt, EMAIL_PURPOSE_MAX_CHARS, PROMPT_VERSION } from "../ai/prompts/personalize.v2";
 import { LlmLimiter } from "../ai/rateLimit/llmLimiter";
 import { safeErrorLog } from "../ai/safeLog";
 import { renderCampaignEmail } from "../campaigns/values";

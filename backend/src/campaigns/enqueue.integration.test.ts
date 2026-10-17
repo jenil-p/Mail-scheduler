@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "../generated/prisma/client";
 import { draftId as computeDraftId, promptFingerprint } from "../ai/identity";
-import { PROMPT_VERSION } from "../ai/prompts/personalize.v1";
+import { PROMPT_VERSION } from "../ai/prompts/personalize.v2";
 import type { GenerateJobData } from "../queue/generateJob";
 
 /**

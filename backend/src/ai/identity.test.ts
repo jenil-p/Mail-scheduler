@@ -9,7 +9,7 @@ import {
 } from "./identity";
 
 const base = {
-  promptTemplateVersion: "personalize.v1",
+  promptTemplateVersion: "personalize.v2",
   aiInstruction: "Warm and brief.",
   llmModel: "gemini-2.5-flash",
 };
@@ -26,7 +26,7 @@ describe("promptFingerprint", () => {
   it("changes when any single input changes", () => {
     const fingerprint = promptFingerprint(base);
 
-    expect(promptFingerprint({ ...base, promptTemplateVersion: "personalize.v2" })).not.toBe(
+    expect(promptFingerprint({ ...base, promptTemplateVersion: "personalize.v3" })).not.toBe(
       fingerprint
     );
     expect(promptFingerprint({ ...base, aiInstruction: "Formal and brief." })).not.toBe(fingerprint);
@@ -43,12 +43,12 @@ describe("promptFingerprint", () => {
     // owner's), so the formula is kept as specified and the limitation is recorded
     // in docs/phase-notes.md rather than silently deviating from the spec.
     const a = promptFingerprint({
-      promptTemplateVersion: "personalize.v1",
+      promptTemplateVersion: "personalize.v2",
       aiInstruction: "a|b",
       llmModel: "c",
     });
     const b = promptFingerprint({
-      promptTemplateVersion: "personalize.v1",
+      promptTemplateVersion: "personalize.v2",
       aiInstruction: "a",
       llmModel: "b|c",
     });
@@ -102,12 +102,12 @@ describe("campaignPromptIdentity", () => {
         id: "cm_1",
         promptFingerprint: "abc",
         llmModel: "gemini-2.5-flash",
-        promptTemplateVersion: "personalize.v1",
+        promptTemplateVersion: "personalize.v2",
       })
     ).toEqual({
       promptFingerprint: "abc",
       llmModel: "gemini-2.5-flash",
-      promptTemplateVersion: "personalize.v1",
+      promptTemplateVersion: "personalize.v2",
     });
   });
 
@@ -121,7 +121,7 @@ describe("campaignPromptIdentity", () => {
         id: "cm_1",
         promptFingerprint: "abc",
         llmModel: "gemini-2.5-flash",
-        promptTemplateVersion: "personalize.v1",
+        promptTemplateVersion: "personalize.v2",
         ...override,
       })
     ).toThrow(CampaignPromptIdentityMissingError);

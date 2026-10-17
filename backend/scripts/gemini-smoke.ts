@@ -26,7 +26,7 @@
  * by the parser, and 1 when the parser could not classify a failure — the case that
  * needs the parser fixed before the feature can be trusted against a real key.
  */
-
+import "dotenv/config";
 import { GoogleGenAI } from "@google/genai";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -35,7 +35,7 @@ import {
 } from "../src/ai/llm/gemini";
 import { INTRO_RESPONSE_SCHEMA } from "../src/ai/llm/LlmClient";
 import { analyzeGeminiError } from "../src/ai/llm/geminiErrors";
-import { SYSTEM_PROMPT } from "../src/ai/prompts/personalize.v1";
+import { SYSTEM_PROMPT } from "../src/ai/prompts/personalize.v2";
 
 function fail(message: string): never {
   console.error(message);

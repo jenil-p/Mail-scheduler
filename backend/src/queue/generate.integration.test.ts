@@ -9,7 +9,7 @@ import { parseAiConfig } from "../config/ai";
 import { MockLlmClient } from "../ai/llm/mock";
 import { RetryableError } from "../ai/llm/LlmClient";
 import { promptFingerprint } from "../ai/identity";
-import { PROMPT_VERSION } from "../ai/prompts/personalize.v1";
+import { PROMPT_VERSION } from "../ai/prompts/personalize.v2";
 import type { LlmLimiter } from "../ai/rateLimit/llmLimiter";
 import type { GenerateDeps, GenerateResult } from "./generateWorker";
 import type { GenerateJobData } from "./generateJob";
