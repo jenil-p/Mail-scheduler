@@ -32,7 +32,7 @@ import { RateLimitError, UnrecoverableError, Worker, type Job } from "bullmq";
 import { config } from "../config";
 import type { AiConfig } from "../config/ai";
 import { prisma as defaultPrisma } from "../db/pool";
-import type { PrismaClient } from "../generated/prisma/client";
+import { Prisma, type PrismaClient } from "../generated/prisma/client";
 import { createLlmClient } from "../ai/llm";
 import {
   LlmError,
@@ -48,6 +48,7 @@ import { LlmLimiter } from "../ai/rateLimit/llmLimiter";
 import { safeErrorLog } from "../ai/safeLog";
 import { renderCampaignEmail } from "../campaigns/values";
 import { normalizeNewlines } from "../campaigns/render";
+import { runGuardrails, recipientHasInjection, type GuardrailFailure } from "../ai/guardrails";
 import { GENERATE_QUEUE_NAME, getGenerateQueue } from "./generateQueue";
 import { isGenerateJobData, type GenerateJobData } from "./generateJob";
 import { redisConnection } from "./queue";
@@ -56,6 +57,7 @@ import Redis from "ioredis";
 /** Fallback reasons stored on the draft (FR-10 and the 429 decision). */
 export const FALLBACK_THIN_DATA = "THIN_DATA";
 export const FALLBACK_QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED";
+export const FALLBACK_INJECTION_SUSPECTED = "INJECTION_SUSPECTED";
 
 /** Draft statuses that mean "generation is over for this draft" (FR-7). */
 export const TERMINAL_DRAFT_STATUSES = [
@@ -69,6 +71,7 @@ export const TERMINAL_DRAFT_STATUSES = [
 
 export type GenerateOutcome =
   | "READY"
+  | "FLAGGED"
   | "FALLBACK"
   | "MISSING"
   | "SKIPPED_TERMINAL"
@@ -81,6 +84,7 @@ export interface GenerateResult {
   outcome: GenerateOutcome;
   /** Set for FALLBACK outcomes: `THIN_DATA`, `QUOTA_EXHAUSTED` or an error code. */
   fallbackReason?: string;
+  flagReasons?: GuardrailFailure[];
 }
 
 /** The parts of a BullMQ job this processor uses — so tests can pass a plain object. */
@@ -303,7 +307,26 @@ export async function processGenerate(
     return { outcome: "FALLBACK", fallbackReason: FALLBACK_THIN_DATA };
   }
 
-  // 8. Claim it. Two workers racing one draft: only one updateMany matches.
+  // 8. Input-side injection: if any recipient field matches injection patterns,
+  //    do not call the model. The draft becomes FALLBACK with INJECTION_SUSPECTED.
+  if (recipientHasInjection(draft.recipient)) {
+    const rendered = renderPlain(draft);
+    await deps.prisma.generatedDraft.update({
+      where: { id: draft.id },
+      data: {
+        status: "FALLBACK",
+        fallbackReason: FALLBACK_INJECTION_SUSPECTED,
+        aiIntro: null,
+        subject: rendered.subject,
+        body: rendered.body,
+      },
+    });
+
+    log(`draft ${draftId}: recipient data matched prompt injection pattern, fell back to the plain template`);
+    return { outcome: "FALLBACK", fallbackReason: FALLBACK_INJECTION_SUSPECTED };
+  }
+
+  // 9. Claim it. Two workers racing one draft: only one updateMany matches.
   const staleBefore = new Date(Date.now() - 2 * deps.ai.timeoutMs);
   const claim = await deps.prisma.generatedDraft.updateMany({
     where: {
@@ -393,22 +416,52 @@ async function generate(
 
   const intro = parseIntro(result.text);
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // Phase 4 hook: deterministic guardrails.
-  //
-  // Phase 4 replaces this comment with `runGuardrails({ intro, recipient,
-  // renderedBody })`. A failing check makes the draft `FLAGGED` with
-  // machine-readable `flagReasons` instead of `READY`, and the same runner is
-  // re-run when a reviewer edits an intro (FR-12). Until it exists, every parsed
-  // intro is `READY`.
-  // ───────────────────────────────────────────────────────────────────────────
-
   const rendered = renderPlain(draft, intro);
+
+  const failures = runGuardrails({
+    intro,
+    recipient: {
+      first_name: draft.recipient.firstName,
+      company: draft.recipient.company,
+      role: draft.recipient.role,
+      note: draft.recipient.note,
+    },
+    campaign: {
+      linkUrl: draft.campaign.linkUrl,
+      unsubscribeUrl: draft.campaign.unsubscribeUrl,
+    },
+    renderedSubject: rendered.subject,
+    renderedBody: rendered.body,
+    introMaxChars: deps.ai.introMaxChars ?? 240,
+  });
+
+  if (failures.length > 0) {
+    await deps.prisma.generatedDraft.update({
+      where: { id: draft.id },
+      data: {
+        status: "FLAGGED",
+        flagReasons: failures as unknown as Prisma.InputJsonValue,
+        aiIntro: intro,
+        subject: rendered.subject,
+        body: rendered.body,
+        fallbackReason: null,
+        model: result.model,
+        tokensIn: result.tokensIn,
+        tokensOut: result.tokensOut,
+        latencyMs,
+      },
+    });
+
+    const codes = failures.map((f) => f.code).join(", ");
+    log(`draft ${draft.id} FLAGGED [${codes}]`);
+    return { outcome: "FLAGGED", flagReasons: failures };
+  }
 
   await deps.prisma.generatedDraft.update({
     where: { id: draft.id },
     data: {
       status: "READY",
+      flagReasons: Prisma.DbNull,
       aiIntro: intro,
       subject: rendered.subject,
       body: rendered.body,
