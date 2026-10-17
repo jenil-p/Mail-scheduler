@@ -828,4 +828,48 @@ suite("generate worker (integration)", () => {
     expect(fallen.fallbackReason).toBe("UNKNOWN");
     expect(fallen.aiIntro).toBeNull();
   });
+
+  it("re-enqueues and generates a draft whose job completed as SKIPPED_CAMPAIGN after campaign resumes", async () => {
+    const ai = aiConfig();
+    const campaignId = await createCampaign({ recipients: [{}] });
+    const [recipient] = await recipientsOf(campaignId);
+
+    // Pause the campaign before running the first job
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: "PAUSED" },
+    });
+
+    const { draftId } = await enqueue(campaignId, recipient.id, ai);
+
+    const llm = new MockLlmClient({ script: [{ kind: "success", intro: "Generated after resume" }] });
+    const worker = startWorker(llm, ai);
+
+    // First run finishes as SKIPPED_CAMPAIGN and job becomes completed in BullMQ
+    await jobFinished(worker, draftId);
+
+    const draftBefore = await draftOf(campaignId, recipient.id);
+    expect(draftBefore?.status).toBe("PENDING");
+    expect(llm.callCount).toBe(0);
+
+    const completedJob = await queue.getJob(draftId);
+    expect(await completedJob?.getState()).toBe("completed");
+
+    // Resume the campaign
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: "GENERATING" },
+    });
+
+    // Re-enqueue: removes completed job and adds new job
+    await enqueue(campaignId, recipient.id, ai);
+
+    const ready = await waitFor(async () => {
+      const draft = await draftOf(campaignId, recipient.id);
+      return draft?.status === "READY" ? draft : undefined;
+    }, "the resumed draft to be generated");
+
+    expect(ready.aiIntro).toBe("Generated after resume");
+    expect(llm.callCount).toBe(1);
+  });
 });

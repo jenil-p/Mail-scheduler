@@ -46,6 +46,9 @@ export interface EnqueueGenerateDeps {
    * pass the same one here or the two will disagree about "the last attempt".
    */
   ai?: AiConfig;
+  getJob?: (
+    id: string
+  ) => Promise<{ getState: () => Promise<string>; remove: () => Promise<void> } | null | undefined>;
   addJob?: (
     name: string,
     data: GenerateJobData,
@@ -59,6 +62,15 @@ export interface EnqueueGenerateResult {
   recipientId: string;
   isSample: boolean;
 }
+
+const TERMINAL_STATUSES = new Set([
+  "READY",
+  "FLAGGED",
+  "FALLBACK",
+  "APPROVED",
+  "HELD",
+  "QUEUED",
+]);
 
 /**
  * Create (or leave alone) the draft for one recipient and put its job on the
@@ -102,7 +114,7 @@ export async function enqueueGenerate(
     promptFingerprint: identity.promptFingerprint,
   });
 
-  await db.generatedDraft.upsert({
+  const draft = await db.generatedDraft.upsert({
     where: { id },
     create: {
       id,
@@ -119,12 +131,37 @@ export async function enqueueGenerate(
     update: {},
   });
 
+  // After the upsert, if the draft is terminal, do not add a job.
+  if (TERMINAL_STATUSES.has(draft.status)) {
+    return { draftId: id, campaignId, recipientId, isSample };
+  }
+
+  const queue = getGenerateQueue();
+  const getJob =
+    deps.getJob ??
+    (deps.addJob ? async () => undefined : (jobId: string) => queue.getJob(jobId));
+
+  const job = await getJob(id);
+  const state = job ? await job.getState() : undefined;
+
+  if (state === "completed" || state === "failed") {
+    await job!.remove();
+  } else if (
+    state === "waiting" ||
+    state === "active" ||
+    state === "delayed" ||
+    state === "prioritized" ||
+    state === "waiting-children"
+  ) {
+    return { draftId: id, campaignId, recipientId, isSample };
+  }
+
   const data: GenerateJobData = { draftId: id, campaignId, recipientId, isSample };
   const jobOptions = generateJobOptions(1 + (deps.ai?.maxRetries ?? config.ai.maxRetries));
 
   const addJob =
     deps.addJob ??
-    (async (name, jobData, opts) => getGenerateQueue().add(name, jobData, opts));
+    (async (name, jobData, opts) => queue.add(name, jobData, opts));
 
   await addJob(GENERATE_JOB_NAME, data, {
     jobId: id,
@@ -154,3 +191,9 @@ export async function enqueueGenerateForRecipients(
 
   return results;
 }
+
+export {
+  reconcileGeneration,
+  type ReconcileGenerationDeps,
+  type ReconcileGenerationResult,
+} from "./reconcile";

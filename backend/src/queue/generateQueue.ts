@@ -7,9 +7,10 @@
  * that did not exist before (NFR-2). It shares the send queue's Redis connection,
  * which is already configured with `maxRetriesPerRequest: null` as BullMQ needs.
  *
- * Job identity is the draft id (spec 6.4), which is what makes `enqueueGenerate`
- * idempotent: adding a job whose id is already in the queue is a no-op, and the
- * worker re-checks the draft's status anyway (FR-7).
+ * Job identity is the draft id (spec 6.4). BullMQ ignores `add()` for an existing
+ * jobId, and keeps finished jobs (completed 24h, failed 7d), so `enqueueGenerate`
+ * looks up the job by id: if completed or failed, it is removed before re-adding;
+ * if waiting, active or delayed, it is left alone.
  */
 
 import { Queue, type JobsOptions } from "bullmq";

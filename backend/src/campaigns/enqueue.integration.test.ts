@@ -26,6 +26,7 @@ suite("enqueueGenerate (integration)", () => {
   let prisma: PrismaClient;
   let enqueueGenerate: typeof import("./enqueue").enqueueGenerate;
   let CampaignNotEnqueueableError: typeof import("./enqueue").CampaignNotEnqueueableError;
+  let reconcileGeneration: typeof import("./enqueue").reconcileGeneration;
 
   const campaignIds: string[] = [];
   const added: AddedJob[] = [];
@@ -45,6 +46,7 @@ suite("enqueueGenerate (integration)", () => {
     prisma = client;
     enqueueGenerate = enqueueModule.enqueueGenerate;
     CampaignNotEnqueueableError = enqueueModule.CampaignNotEnqueueableError;
+    reconcileGeneration = enqueueModule.reconcileGeneration;
   });
 
   afterAll(async () => {
@@ -226,5 +228,71 @@ suite("enqueueGenerate (integration)", () => {
     await expect(
       enqueueGenerate("cm_missing", "cr_missing", {}, { db: prisma, addJob })
     ).rejects.toThrow(/does not exist/);
+  });
+
+  it("leaves a PENDING draft when addJob fails, which reconcileGeneration recovers", async () => {
+    const campaignId = await createCampaign();
+    const recipientId = await createRecipient(campaignId);
+
+    const failingAddJob = async () => {
+      throw new Error("Redis connection dropped");
+    };
+
+    await expect(
+      enqueueGenerate(campaignId, recipientId, {}, { db: prisma, addJob: failingAddJob })
+    ).rejects.toThrow("Redis connection dropped");
+
+    const draft = await prisma.generatedDraft.findFirst({ where: { campaignId, recipientId } });
+    expect(draft?.status).toBe("PENDING");
+
+    // Reconcile recovers the draft and enqueues the job
+    const recoveredAdded: AddedJob[] = [];
+    const recoverAddJob = async (name: string, data: GenerateJobData, options: { jobId: string }) => {
+      recoveredAdded.push({ name, data, options });
+    };
+
+    const result = await reconcileGeneration(campaignId, {
+      db: prisma,
+      addJob: recoverAddJob,
+      getJob: async () => undefined,
+    });
+
+    expect(result.reconciledCount).toBe(1);
+    expect(result.draftIds).toContain(draft?.id);
+    expect(recoveredAdded).toHaveLength(1);
+    expect(recoveredAdded[0].options.jobId).toBe(draft?.id);
+  });
+
+  it("calling enqueueGenerate twice still yields one job and one draft", async () => {
+    const campaignId = await createCampaign();
+    const recipientId = await createRecipient(campaignId);
+
+    const jobs: AddedJob[] = [];
+    let jobState: string | undefined = undefined;
+
+    const mockGetJob = async () =>
+      jobState ? { getState: async () => jobState as string, remove: async () => undefined } : undefined;
+
+    const mockAddJob = async (name: string, data: GenerateJobData, options: { jobId: string }) => {
+      jobs.push({ name, data, options });
+      jobState = "waiting";
+    };
+
+    const first = await enqueueGenerate(
+      campaignId,
+      recipientId,
+      {},
+      { db: prisma, addJob: mockAddJob, getJob: mockGetJob }
+    );
+    const second = await enqueueGenerate(
+      campaignId,
+      recipientId,
+      {},
+      { db: prisma, addJob: mockAddJob, getJob: mockGetJob }
+    );
+
+    expect(first.draftId).toBe(second.draftId);
+    expect(jobs).toHaveLength(1); // Second call saw 'waiting' and skipped adding
+    expect(await prisma.generatedDraft.count({ where: { campaignId } })).toBe(1);
   });
 });
