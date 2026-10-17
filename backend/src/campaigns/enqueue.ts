@@ -22,8 +22,9 @@ import type { PrismaClient } from "../generated/prisma/client";
 import type { AiConfig } from "../config/ai";
 import { config } from "../config";
 import { campaignPromptIdentity, draftId as computeDraftId } from "../ai/identity";
-import { getGenerateQueue, generateJobOptions, GENERATE_JOB_NAME } from "../queue/generateQueue";
+import { getGenerateQueue, generateJobOptions } from "../queue/generateQueue";
 import type { GenerateJobData } from "../queue/generateJob";
+import { ensureGenerateJob } from "./reconcile";
 
 export class CampaignNotEnqueueableError extends Error {
   constructor(message: string) {
@@ -140,35 +141,17 @@ export async function enqueueGenerate(
   const getJob =
     deps.getJob ??
     (deps.addJob ? async () => undefined : (jobId: string) => queue.getJob(jobId));
-
-  const job = await getJob(id);
-  const state = job ? await job.getState() : undefined;
-
-  if (state === "completed" || state === "failed") {
-    await job!.remove();
-  } else if (
-    state === "waiting" ||
-    state === "active" ||
-    state === "delayed" ||
-    state === "prioritized" ||
-    state === "waiting-children"
-  ) {
-    return { draftId: id, campaignId, recipientId, isSample };
-  }
-
-  const data: GenerateJobData = { draftId: id, campaignId, recipientId, isSample };
-  const jobOptions = generateJobOptions(1 + (deps.ai?.maxRetries ?? config.ai.maxRetries));
-
   const addJob =
     deps.addJob ??
     (async (name, jobData, opts) => queue.add(name, jobData, opts));
 
-  await addJob(GENERATE_JOB_NAME, data, {
-    jobId: id,
-    attempts: jobOptions.attempts as number,
-    // The delay itself comes from the worker's custom backoffStrategy.
-    backoff: { type: "custom" },
-  });
+  const data: GenerateJobData = { draftId: id, campaignId, recipientId, isSample };
+  const jobOptions = generateJobOptions(1 + (deps.ai?.maxRetries ?? config.ai.maxRetries));
+
+  await ensureGenerateJob(
+    { draftId: id, data, attempts: jobOptions.attempts as number },
+    { getJob, addJob }
+  );
 
   return { draftId: id, campaignId, recipientId, isSample };
 }
@@ -193,7 +176,11 @@ export async function enqueueGenerateForRecipients(
 }
 
 export {
+  ensureGenerateJob,
   reconcileGeneration,
+  type EnsureGenerateJobDeps,
+  type EnsureGenerateJobInput,
+  type EnsureGenerateJobOutcome,
   type ReconcileGenerationDeps,
   type ReconcileGenerationResult,
 } from "./reconcile";

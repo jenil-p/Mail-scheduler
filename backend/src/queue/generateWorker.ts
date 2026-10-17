@@ -325,7 +325,7 @@ export async function processGenerate(
     }
     throw new RetryableError(
       `draft ${draftId} is not claimable right now — another worker may be generating it`,
-      { code: "RATE_LIMITED_PER_MINUTE" }
+      { code: "NOT_CLAIMABLE" }
     );
   }
 
@@ -531,13 +531,11 @@ function delayForAttempt(deps: GenerateDeps, attemptsMade: number): number {
 }
 
 /**
- * Clamp a throttle delay into the range the queue's Redis backend accepts.
+ * Clamp a throttle delay into a defensive range [250 ms, 300,000 ms].
  *
- * BullMQ writes the delay as a Redis PX (millisecond expire); Redis rejects a PX of
- * 0 with `ERR invalid expire time in 'set' command` (verified against the installed
- * BullMQ 5.81.3 -> Redis path), and arbitrarily large PX values are undesirable, so
- * both ends are capped. The lower bound also guarantees progress: a provider that
- * returns `retryAfterMs: 0` still yields a real pause.
+ * This is a defensive clamp: excessively large delays are capped to 5 minutes,
+ * and the lower bound guarantees progress (a provider or header that returns
+ * `retryAfterMs: 0` still yields a real pause rather than a hot loop).
  */
 export function clampThrottleDelay(ms: number): number {
   return Math.max(250, Math.min(300_000, Math.round(ms)));
@@ -556,9 +554,8 @@ export function clampThrottleDelay(ms: number): number {
  * the "original" error — that consumes an attempt and lets BullMQ apply the custom
  * backoff, ending in a fallback rather than an unbounded loop.
  *
- * The delay passed to the queue is clamped to a sane window (see
- * `clampThrottleDelay`): BullMQ writes it as a Redis PX, and Redis rejects a PX of 0,
- * so we never hand a zero or absurdly large value to the queue.
+ * The delay passed to the queue is clamped to a defensive window (see
+ * `clampThrottleDelay`), so we never hand a zero or absurdly large value to the queue.
  */
 async function throttle(
   deps: GenerateDeps,

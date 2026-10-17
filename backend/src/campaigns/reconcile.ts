@@ -6,7 +6,7 @@
  *   - looks up job by id
  *   - if completed or failed, removes it and re-adds
  *   - if no job, adds it
- *   - if waiting/active/delayed, leaves it alone
+ *   - if waiting/active/delayed/prioritized, leaves it alone
  *
  * Callable at boot (reconciling all active campaigns) and on demand (for a specific campaignId).
  */
@@ -16,13 +16,65 @@ import type { AiConfig } from "../config/ai";
 import { config } from "../config";
 import { getGenerateQueue, generateJobOptions, GENERATE_JOB_NAME } from "../queue/generateQueue";
 import type { GenerateJobData } from "../queue/generateJob";
-import type { EnqueueGenerateDeps } from "./enqueue";
+
+export const LIVE_JOB_STATES = new Set([
+  "waiting",
+  "active",
+  "delayed",
+  "prioritized",
+  "waiting-children",
+]);
+
+export interface EnsureGenerateJobDeps {
+  getJob: (
+    id: string
+  ) => Promise<{ getState: () => Promise<string>; remove: () => Promise<void> } | null | undefined>;
+  addJob: (
+    name: string,
+    data: GenerateJobData,
+    options: { jobId: string; attempts: number; backoff: { type: string } }
+  ) => Promise<unknown>;
+}
+
+export interface EnsureGenerateJobInput {
+  draftId: string;
+  data: GenerateJobData;
+  attempts: number;
+}
+
+export type EnsureGenerateJobOutcome = "added" | "skipped_live";
+
+/**
+ * Shared helper: look up the job, remove it if completed/failed, skip it if live, else add it.
+ * Used by both enqueueGenerate and reconcileGeneration.
+ */
+export async function ensureGenerateJob(
+  input: EnsureGenerateJobInput,
+  deps: EnsureGenerateJobDeps
+): Promise<EnsureGenerateJobOutcome> {
+  const job = await deps.getJob(input.draftId);
+  const state = job ? await job.getState() : undefined;
+
+  if (state === "completed" || state === "failed") {
+    await job!.remove();
+  } else if (state && LIVE_JOB_STATES.has(state)) {
+    return "skipped_live";
+  }
+
+  await deps.addJob(GENERATE_JOB_NAME, input.data, {
+    jobId: input.draftId,
+    attempts: input.attempts,
+    backoff: { type: "custom" },
+  });
+
+  return "added";
+}
 
 export interface ReconcileGenerationDeps {
   db?: PrismaClient;
   ai?: AiConfig;
-  getJob?: EnqueueGenerateDeps["getJob"];
-  addJob?: EnqueueGenerateDeps["addJob"];
+  getJob?: EnsureGenerateJobDeps["getJob"];
+  addJob?: EnsureGenerateJobDeps["addJob"];
 }
 
 export interface ReconcileGenerationResult {
@@ -38,11 +90,16 @@ export async function reconcileGeneration(
   const ai = deps.ai ?? config.ai;
 
   const campaignWhere = campaignId
-    ? { id: campaignId }
+    ? {
+        id: campaignId,
+        aiEnabled: true,
+        promptFingerprint: { not: null },
+        status: { not: "CANCELLED" as const },
+      }
     : {
         aiEnabled: true,
         promptFingerprint: { not: null },
-        status: { notIn: ["CANCELLED"] as ("CANCELLED")[] },
+        status: { in: ["SAMPLING", "GENERATING"] as ("SAMPLING" | "GENERATING")[] },
       };
 
   const campaigns = await db.campaign.findMany({
@@ -75,19 +132,20 @@ export async function reconcileGeneration(
     });
 
     for (const draft of drafts) {
-      const job = await getJob(draft.id);
-      const state = job ? await job.getState() : undefined;
+      const data: GenerateJobData = {
+        draftId: draft.id,
+        campaignId: campaign.id,
+        recipientId: draft.recipientId,
+        isSample: draft.isSample,
+      };
+      const jobOptions = generateJobOptions(1 + ai.maxRetries);
 
-      if (state === "completed" || state === "failed") {
-        await job!.remove();
-      } else if (
-        state === "waiting" ||
-        state === "active" ||
-        state === "delayed" ||
-        state === "prioritized" ||
-        state === "waiting-children"
-      ) {
-        // live job: leave it alone
+      const outcome = await ensureGenerateJob(
+        { draftId: draft.id, data, attempts: jobOptions.attempts as number },
+        { getJob, addJob }
+      );
+
+      if (outcome === "skipped_live") {
         continue;
       }
 
@@ -97,20 +155,6 @@ export async function reconcileGeneration(
           data: { status: "PENDING" },
         });
       }
-
-      const data: GenerateJobData = {
-        draftId: draft.id,
-        campaignId: campaign.id,
-        recipientId: draft.recipientId,
-        isSample: draft.isSample,
-      };
-      const jobOptions = generateJobOptions(1 + ai.maxRetries);
-
-      await addJob(GENERATE_JOB_NAME, data, {
-        jobId: draft.id,
-        attempts: jobOptions.attempts as number,
-        backoff: { type: "custom" },
-      });
 
       draftIds.push(draft.id);
     }

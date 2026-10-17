@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "../generated/prisma/client";
+import type { CampaignStatus } from "../generated/prisma/enums";
 import { draftId as computeDraftId, promptFingerprint } from "../ai/identity";
 import { PROMPT_VERSION } from "../ai/prompts/personalize.v2";
 import type { GenerateJobData } from "../queue/generateJob";
@@ -59,6 +60,7 @@ suite("enqueueGenerate (integration)", () => {
   async function createCampaign(options: {
     withIdentity?: boolean;
     aiEnabled?: boolean;
+    status?: CampaignStatus;
   } = {}): Promise<string> {
     const aiInstruction = "Warm and specific.";
     const model = "mock-model";
@@ -81,7 +83,7 @@ suite("enqueueGenerate (integration)", () => {
         llmModel: options.withIdentity === false ? null : model,
         promptTemplateVersion: options.withIdentity === false ? null : PROMPT_VERSION,
         scheduledAt: new Date(Date.now() + 3_600_000),
-        status: "GENERATING",
+        status: options.status ?? "GENERATING",
       },
     });
 
@@ -294,5 +296,83 @@ suite("enqueueGenerate (integration)", () => {
     expect(first.draftId).toBe(second.draftId);
     expect(jobs).toHaveLength(1); // Second call saw 'waiting' and skipped adding
     expect(await prisma.generatedDraft.count({ where: { campaignId } })).toBe(1);
+  });
+
+  it("reconcileGeneration with no campaignId reconciles only campaigns in SAMPLING or GENERATING", async () => {
+    // 1. SAMPLING campaign with a PENDING draft
+    const samplingId = await createCampaign({ status: "SAMPLING" });
+    const r1 = await createRecipient(samplingId);
+    await enqueueGenerate(samplingId, r1, {}, { db: prisma, addJob: async () => undefined });
+
+    // 2. GENERATING campaign with a PENDING draft
+    const generatingId = await createCampaign({ status: "GENERATING" });
+    const r2 = await createRecipient(generatingId);
+    await enqueueGenerate(generatingId, r2, {}, { db: prisma, addJob: async () => undefined });
+
+    // 3. CANCELLED campaign with a PENDING draft
+    const cancelledId = await createCampaign({ status: "CANCELLED" });
+    const r3 = await createRecipient(cancelledId);
+    await enqueueGenerate(cancelledId, r3, {}, { db: prisma, addJob: async () => undefined });
+
+    // 4. PAUSED campaign with a PENDING draft
+    const pausedId = await createCampaign({ status: "PAUSED" });
+    const r4 = await createRecipient(pausedId);
+    await enqueueGenerate(pausedId, r4, {}, { db: prisma, addJob: async () => undefined });
+
+    const draftSampling = await prisma.generatedDraft.findFirst({ where: { campaignId: samplingId } });
+    const draftGenerating = await prisma.generatedDraft.findFirst({ where: { campaignId: generatingId } });
+    const draftCancelled = await prisma.generatedDraft.findFirst({ where: { campaignId: cancelledId } });
+    const draftPaused = await prisma.generatedDraft.findFirst({ where: { campaignId: pausedId } });
+
+    const addedJobs: string[] = [];
+    const result = await reconcileGeneration(undefined, {
+      db: prisma,
+      addJob: async (_name, _data, opts) => {
+        addedJobs.push(opts.jobId);
+      },
+      getJob: async () => undefined,
+    });
+
+    expect(result.draftIds).toContain(draftSampling?.id);
+    expect(result.draftIds).toContain(draftGenerating?.id);
+    expect(result.draftIds).not.toContain(draftCancelled?.id);
+    expect(result.draftIds).not.toContain(draftPaused?.id);
+    expect(addedJobs).toContain(draftSampling?.id);
+    expect(addedJobs).toContain(draftGenerating?.id);
+    expect(addedJobs).not.toContain(draftCancelled?.id);
+    expect(addedJobs).not.toContain(draftPaused?.id);
+  });
+
+  it("reconcileGeneration with an explicit campaignId reconciles that campaign unless it is CANCELLED", async () => {
+    // 1. CANCELLED campaign -> should NOT reconcile
+    const cancelledId = await createCampaign({ status: "CANCELLED" });
+    const r1 = await createRecipient(cancelledId);
+    await enqueueGenerate(cancelledId, r1, {}, { db: prisma, addJob: async () => undefined });
+
+    const cancelledResult = await reconcileGeneration(cancelledId, {
+      db: prisma,
+      addJob: async () => undefined,
+      getJob: async () => undefined,
+    });
+    expect(cancelledResult.reconciledCount).toBe(0);
+    expect(cancelledResult.draftIds).toHaveLength(0);
+
+    // 2. PAUSED campaign with explicit campaignId -> SHOULD reconcile
+    const pausedId = await createCampaign({ status: "PAUSED" });
+    const r2 = await createRecipient(pausedId);
+    await enqueueGenerate(pausedId, r2, {}, { db: prisma, addJob: async () => undefined });
+    const pausedDraft = await prisma.generatedDraft.findFirst({ where: { campaignId: pausedId } });
+
+    const pausedAdded: string[] = [];
+    const pausedResult = await reconcileGeneration(pausedId, {
+      db: prisma,
+      addJob: async (_name, _data, opts) => {
+        pausedAdded.push(opts.jobId);
+      },
+      getJob: async () => undefined,
+    });
+    expect(pausedResult.reconciledCount).toBe(1);
+    expect(pausedResult.draftIds).toContain(pausedDraft?.id);
+    expect(pausedAdded).toContain(pausedDraft?.id);
   });
 });

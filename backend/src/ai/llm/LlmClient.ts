@@ -67,6 +67,7 @@ export type LlmErrorCode =
   | "MALFORMED_JSON"
   | "AUTH_FAILURE"
   | "BAD_REQUEST"
+  | "NOT_CLAIMABLE"
   | "UNKNOWN";
 
 export interface LlmErrorOptions {
