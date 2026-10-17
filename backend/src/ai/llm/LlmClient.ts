@@ -43,7 +43,7 @@ export interface PromptRecipientData {
 
 /** The model's structured output (spec FR-6). */
 export const introSchema = z.object({
-  intro: z.string().min(1),
+  intro: z.string().trim().min(1),
 });
 
 export type IntroPayload = z.infer<typeof introSchema>;

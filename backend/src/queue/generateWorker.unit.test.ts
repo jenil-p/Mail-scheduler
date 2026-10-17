@@ -35,8 +35,8 @@ describe("parseIntro", () => {
     expect(parseIntro('{"intro":"Great to meet you."}')).toBe("Great to meet you.");
   });
 
-  it("ignores extra keys", () => {
-    expect(parseIntro('{"intro":"Hi","other":1}')).toBe("Hi");
+  it("trims whitespace from the intro", () => {
+    expect(parseIntro('{"intro":"   Pleased to connect.   "}')).toBe("Pleased to connect.");
   });
 
   it.each([
@@ -44,6 +44,7 @@ describe("parseIntro", () => {
     ["truncated JSON", '{"intro":"Hi the'],
     ["the wrong shape", '{"opening":"Hi"}'],
     ["an empty intro", '{"intro":""}'],
+    ["a whitespace-only intro", '{"intro":"   "}'],
     ["a null intro", '{"intro":null}'],
     ["a non-string intro", '{"intro":42}'],
     ["an array", '[{"intro":"Hi"}]'],
