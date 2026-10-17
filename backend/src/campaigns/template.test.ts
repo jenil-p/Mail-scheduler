@@ -10,6 +10,9 @@ import {
 const linkUrl = "https://example.com/webinar";
 const unsubscribeUrl = "https://example.com/unsubscribe";
 
+const DEFAULT_SUBJECT_MAX_LENGTH = 300;
+const DEFAULT_BODY_MAX_LENGTH = 20_000;
+
 function validate(overrides: Partial<TemplateValidationInput> = {}) {
   return validateTemplate({
     subject: "Invitation: Ops Automation Webinar, Oct 28",
@@ -18,6 +21,8 @@ function validate(overrides: Partial<TemplateValidationInput> = {}) {
     csvVariables: ["first_name", "company", "role", "note"],
     linkUrl,
     unsubscribeUrl,
+    subjectMaxLength: DEFAULT_SUBJECT_MAX_LENGTH,
+    bodyMaxLength: DEFAULT_BODY_MAX_LENGTH,
     ...overrides,
   });
 }
@@ -179,31 +184,43 @@ describe("validateTemplate", () => {
   });
 
   describe("template size caps", () => {
-    it("rejects a body longer than TEMPLATE_BODY_MAX_LENGTH before any regex work", () => {
+    it("rejects a body longer than bodyMaxLength before any regex work", () => {
+      // The body is too long AND the subject references an unknown variable — but
+      // because the body tripwire returns immediately, the subject is never scanned
+      // and the unknown-variable error does not appear.
       const longBody = "x".repeat(20_001) + "\n\n{{unsubscribe_link}}";
       const { errors } = validate({
+        subject: "Hi {{nickname}}",
         body: longBody,
         aiEnabled: false,
       });
       expect(errors).toEqual([
         expect.objectContaining({ code: "TEMPLATE_TOO_LONG", field: "body" }),
       ]);
+      expect(errors).not.toContainEqual(
+        expect.objectContaining({ code: "UNKNOWN_VARIABLE" })
+      );
     });
 
-    it("rejects a subject longer than TEMPLATE_SUBJECT_MAX_LENGTH", () => {
+    it("rejects a subject longer than subjectMaxLength before any regex work", () => {
+      // The subject is too long AND the body references an unknown variable — but
+      // because the subject tripwire returns immediately, the body is never scanned.
       const longSubject = "x".repeat(301);
       const { errors } = validate({
         subject: longSubject,
-        body: "Hi {{first_name}}\n\n{{ai_intro}}\n\n{{unsubscribe_link}}",
+        body: "Hi {{nickname}}\n\n{{ai_intro}}\n\n{{unsubscribe_link}}",
         aiEnabled: true,
       });
       expect(errors).toEqual([
         expect.objectContaining({ code: "TEMPLATE_TOO_LONG", field: "subject" }),
       ]);
+      expect(errors).not.toContainEqual(
+        expect.objectContaining({ code: "UNKNOWN_VARIABLE" })
+      );
     });
 
     it("accepts templates at the exact limit", () => {
-      // Body must be <= TEMPLATE_BODY_MAX_LENGTH including the required unsubscribe_link.
+      // Body must be <= bodyMaxLength including the required unsubscribe_link.
       // "\n\n{{unsubscribe_link}}" = 2 + 20 = 22 chars, so 20000 - 22 = 19978 x's.
       const body = "x".repeat(19_978) + "\n\n{{unsubscribe_link}}";
       expect(
@@ -218,7 +235,11 @@ describe("validateTemplate", () => {
   describe("unknown variables from extra columns only", () => {
     // When csvVariables comes from extraColumns only (the Phase 7 caller passes
     // csvVariables = extraColumns), built-in variables not in the CSV are unknown.
-    it("rejects {{email}} as UNKNOWN_VARIABLE when it is not a CSV column", () => {
+    it("rejects {{email}} as UNKNOWN_VARIABLE when only extra columns are available", () => {
+      // When csvVariables comes from extraColumns only (the Phase 7 caller passes
+      // csvVariables = extraColumns), built-in variables that are not in the CSV
+      // are unknown — so {{email}} is rejected even though it is a built-in-like
+      // name, because it is not a recognised column here.
       const { errors } = validate({
         body: "Hi {{email}}\n\n{{ai_intro}}\n\n{{unsubscribe_link}}",
         csvVariables: ["first_name", "company"], // email is NOT in the CSV

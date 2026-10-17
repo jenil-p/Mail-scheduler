@@ -20,8 +20,6 @@ import {
   type TemplateValues,
 } from "./render";
 
-import { config } from "../config";
-
 /** Always available, whatever the CSV contains (spec FR-3). */
 export const BUILT_IN_VARIABLES = [
   "first_name",
@@ -80,6 +78,10 @@ export interface TemplateValidationInput {
    * with no recipients there are simply no warnings.
    */
   recipientValues?: readonly TemplateValues[];
+  /** Max characters for the subject, after which the template is rejected. */
+  subjectMaxLength: number;
+  /** Max characters for the body, after which the template is rejected. */
+  bodyMaxLength: number;
 }
 
 /**
@@ -124,21 +126,32 @@ export function validateTemplate(input: TemplateValidationInput): TemplateValida
   const warnings: TemplateWarning[] = [];
   const warningsSeen = new Set<string>();
 
-  // Size caps checked BEFORE any regex work on the text (catches巨型 templates early).
-  if (input.subject.length > config.ai.templateSubjectMaxLength) {
-    errors.push({
-      code: "TEMPLATE_TOO_LONG",
-      field: "subject",
-      message: `Subject is longer than the ${config.ai.templateSubjectMaxLength} character limit`,
-    });
+  // Size caps checked BEFORE any regex work on the text. On failure we return
+  // immediately so a huge template never reaches the placeholder scanners.
+  if (input.subject.length > input.subjectMaxLength) {
+    return {
+      errors: [
+        {
+          code: "TEMPLATE_TOO_LONG",
+          field: "subject",
+          message: `Subject is longer than the ${input.subjectMaxLength} character limit`,
+        },
+      ],
+      warnings: [],
+    };
   }
 
-  if (input.body.length > config.ai.templateBodyMaxLength) {
-    errors.push({
-      code: "TEMPLATE_TOO_LONG",
-      field: "body",
-      message: `Body is longer than the ${config.ai.templateBodyMaxLength} character limit`,
-    });
+  if (input.body.length > input.bodyMaxLength) {
+    return {
+      errors: [
+        {
+          code: "TEMPLATE_TOO_LONG",
+          field: "body",
+          message: `Body is longer than the ${input.bodyMaxLength} character limit`,
+        },
+      ],
+      warnings: [],
+    };
   }
 
   if (input.subject.trim() === "") {

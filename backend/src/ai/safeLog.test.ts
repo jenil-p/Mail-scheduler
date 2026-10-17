@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { RetryableError } from "./llm/LlmClient";
-import { MAX_LOGGED_MESSAGE_CHARS, redactText, safeErrorLog } from "./safeLog";
+import {
+  MAX_INPUT_CHARS,
+  MAX_LOGGED_MESSAGE_CHARS,
+  redactText,
+  safeErrorLog,
+} from "./safeLog";
 
 describe("redactText", () => {
   it("replaces anything shaped like an email address", () => {
@@ -19,31 +24,34 @@ describe("redactText", () => {
 });
 
 describe("redactText timing", () => {
-  it("scans a 20,000-character adversarial string with no @ in well under 100ms", () => {
-    // 20,000 chars with no @ — the local-part cap (RFC 5321: 64 chars max)
-    // prevents O(n^2) backtracking across all starting positions.
-    // redactText truncates to MAX_LOGGED_MESSAGE_CHARS + 1 (ellipsis).
-    const adversarial = "a".repeat(20_000);
+  it("scans 'a@'.repeat(10000) (20,000 chars) in well under 100ms", () => {
+    // 20,000 chars of "a@" repeated — no complete address survives because the
+    // input is capped to MAX_INPUT_CHARS before the regex runs, and even inside
+    // the capped window each "a@" has no domain/TLD, so nothing is matched.
+    const input = "a@".repeat(10_000);
     const start = performance.now();
-    const result = redactText(adversarial);
+    const result = redactText(input);
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(100);
-    // Result is truncated: 300 chars + ellipsis.
-    expect(result).toHaveLength(301);
-    expect(result).toBe("a".repeat(300) + "…");
+    // Capped to MAX_INPUT_CHARS (no address matched), then to MAX_LOGGED_MESSAGE_CHARS + ellipsis.
+    expect(result).toHaveLength(MAX_LOGGED_MESSAGE_CHARS + 1);
+    expect(result).toBe("a@".repeat(150) + "…");
   });
 
-  it("scans 20,000 chars with a valid email near the end in well under 100ms", () => {
-    // Local part is short (within RFC 5321's 64-char limit), domain is short.
-    // Total = 20,000: 19,976 a's + 24-char email = 20,000.
-    const withEmail = "a".repeat(19_976) + "x.algorithms@example.com";
+  it("still redacts a 64-char local part inside the capped window in well under 100ms", () => {
+    // A real address whose local part is exactly 64 chars (RFC 5321 limit).
+    // The prefix pushes the address inside the MAX_INPUT_CHARS window so the
+    // regex actually sees it; the address is short enough to survive truncation.
+    const local = "a".repeat(64);
+    const prefix = "p".repeat(100);
+    const input = prefix + local + "@x.co";
+    expect(input.length).toBeLessThanOrEqual(MAX_INPUT_CHARS);
     const start = performance.now();
-    const result = redactText(withEmail);
+    const result = redactText(input);
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(100);
-    // Result is truncated; the email replacement is near position 19,976,
-    // which is past the 300-char truncation point, so we just see truncated a's.
-    expect(result).toHaveLength(301);
+    expect(result).toContain("[email]");
+    expect(result).not.toContain(local + "@x.co");
   });
 });
 

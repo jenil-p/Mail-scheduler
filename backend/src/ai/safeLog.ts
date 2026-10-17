@@ -12,19 +12,27 @@
  */
 
 // Matches something that looks like an email address: a local part (capped at
-// 64 chars, the RFC 5321 limit), an @, a domain part, a dot, and a TLD. Capping
-// the local part prevents polynomial backtracking on adversarial input like
-// 20,000 chars with no @ — the greedy class gives up at most 64 chars before the
-// engine advances. The separator set deliberately excludes punctuation that
-// separates list items, so a log line with several addresses is redacted as several.
-const EMAIL_PATTERN = /[^\s<>()"',;:]{1,64}@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g;
+// 64 chars, the RFC 5321 limit), an @, a domain part, a dot, and a TLD.
+// "@" is excluded from every character class so a bucket-of-addresses string like
+// "a@a@a@..." stays linear instead of driving polynomial backtracking, and long
+// provider errors are capped to a fixed length before the regex is ever run.
+const EMAIL_PATTERN = /[^\s<>()"',;:@]{1,64}@[^\s<>()"',;:@]+\.[^\s<>()"',;:@]+/g;
 
 /** How much of an error message is kept. Enough to act on, too short to leak. */
 export const MAX_LOGGED_MESSAGE_CHARS = 300;
 
+/**
+ * Amount of input scanned for addresses. Provider error text can be very long and
+ * is only useful up to a point, so anything past this is discarded before the
+ * regex runs. This is the cap the timing test exercises.
+ */
+export const MAX_INPUT_CHARS = 2000;
+
 /** Replace anything that looks like an email address, then truncate. */
 export function redactText(value: string, max = MAX_LOGGED_MESSAGE_CHARS): string {
-  const withoutEmails = value.replace(EMAIL_PATTERN, "[email]");
+  const capped =
+    value.length > MAX_INPUT_CHARS ? value.slice(0, MAX_INPUT_CHARS) : value;
+  const withoutEmails = capped.replace(EMAIL_PATTERN, "[email]");
   return withoutEmails.length > max ? `${withoutEmails.slice(0, max)}…` : withoutEmails;
 }
 
