@@ -457,25 +457,34 @@ async function fail(
     return { outcome: "FALLBACK", fallbackReason: FALLBACK_QUOTA_EXHAUSTED };
   }
 
-  // 401/403 is not the draft's fault: pause the campaign so the operator sees it
-  // instead of watching every remaining draft fall back one by one.
+  // 401/403 (and the invalid-key case): pause the campaign but release the draft to
+  // PENDING, not FALLBACK, so a resume regenerates it.
   if (error instanceof NonRetryableError && error.authFailure) {
     await pauseForAuthFailure(deps, draft);
+    throw new UnrecoverableError(`Generate failed permanently: ${code}`);
   }
 
-  const terminal = error instanceof NonRetryableError || isLastAttempt || !isRetryable(error);
-
-  if (terminal) {
+  // Other non-retryable errors (e.g. 400 Bad Request):
+  if (error instanceof NonRetryableError) {
     await fallBackWithReason(deps, draft, code);
     log(`draft ${draft.id} fell back to the plain template (${code})`);
+    throw new UnrecoverableError(`Generate failed permanently: ${code}`);
+  }
 
-    if (error instanceof NonRetryableError) {
-      // No retries for 400/401/403: mark the job terminal rather than letting it
-      // burn the remaining attempts on the same permanent error.
-      throw new UnrecoverableError(`Generate failed permanently: ${code}`);
-    }
-
+  // The last attempt converts to FALLBACK with the error code (FR-10).
+  if (isLastAttempt) {
+    await fallBackWithReason(deps, draft, code);
+    log(`draft ${draft.id} fell back to the plain template (${code})`);
     return { outcome: "FALLBACK", fallbackReason: code };
+  }
+
+  // Non-LLM errors (transient Prisma/Redis errors) are retried up to the attempt limit
+  if (!(error instanceof LlmError)) {
+    await deps.prisma.generatedDraft.updateMany({
+      where: { id: draft.id, status: "GENERATING" },
+      data: { status: "PENDING" },
+    });
+    throw error;
   }
 
   const retryable = error as RetryableError;
@@ -487,12 +496,22 @@ async function fail(
   }
 
   if (retryable.code === "RATE_LIMITED_PER_MINUTE" || retryable.code === "RATE_LIMITED_TOKEN") {
-    await throttle(
-      deps,
-      draft,
-      retryable.retryAfterMs ?? delayForAttempt(deps, job.attemptsMade),
-      `LLM rate limit (${retryable.code}) for ${deps.ai.provider}/${deps.llm.model}`
-    );
+    const currentHits =
+      (
+        await deps.prisma.generatedDraft.findUnique({
+          where: { id: draft.id },
+          select: { rateLimitHits: true },
+        })
+      )?.rateLimitHits ?? draft.rateLimitHits;
+
+    if (currentHits <= deps.ai.maxRetries) {
+      await throttle(
+        deps,
+        draft,
+        retryable.retryAfterMs ?? delayForAttempt(deps, job.attemptsMade),
+        `LLM rate limit (${retryable.code}) for ${deps.ai.provider}/${deps.llm.model}`
+      );
+    }
   }
 
   // Release the claim so the retry can take it again, then let BullMQ wait.
@@ -502,10 +521,6 @@ async function fail(
   });
 
   throw error;
-}
-
-function isRetryable(error: unknown): boolean {
-  return error instanceof RetryableError;
 }
 
 function delayForAttempt(deps: GenerateDeps, attemptsMade: number): number {
@@ -551,7 +566,7 @@ async function throttle(
   retryAfterMs: number,
   reason: string,
 ): Promise<never> {
-  // Always increment the per-draft hit counter (the status is left unchanged here).
+  // Always increment the per-draft hit counter.
   const updated = await deps.prisma.generatedDraft.update({
     where: { id: draft.id },
     data: { rateLimitHits: { increment: 1 } },
@@ -560,26 +575,21 @@ async function throttle(
   const delay = clampThrottleDelay(retryAfterMs);
 
   // Always hand the delay to the queue before any throw, so the queue-wide limiter
-  // is set even on the past-bound path (where we deliberately do not release the claim).
+  // is set even on the past-bound path.
   await deps.rateLimit?.(delay);
 
+  // Release the claim so the retry (or next attempt) can re-acquire the draft.
+  await deps.prisma.generatedDraft.updateMany({
+    where: { id: draft.id, status: "GENERATING" },
+    data: { status: "PENDING" },
+  });
+
   if (updated.rateLimitHits > deps.ai.maxRetries) {
-    // Past the bound: leave the claim in place (the draft stays GENERATING) so that
-    // fail()'s fallBackWithReason can update it on the last attempt. Throw a
-    // RetryableError so BullMQ consumes an attempt and applies backoff, rather than
-    // rethrowing a RateLimitError as the "original" error (which would not consume an
-    // attempt).
     throw new RetryableError(
       `${reason}; rate-limit hits (${updated.rateLimitHits}) exceeded the max-retry budget (${deps.ai.maxRetries}) — throwing RetryableError so BullMQ consumes an attempt and applies backoff`,
       { code: "RATE_LIMITED_PER_MINUTE", retryAfterMs: delay }
     );
   }
-
-  // Not past the bound: release the claim so the retry can re-acquire the draft.
-  await deps.prisma.generatedDraft.updateMany({
-    where: { id: draft.id, status: "GENERATING" },
-    data: { status: "PENDING" },
-  });
 
   throw new RateLimitError(`LLM rate limited, retrying in ${delay}ms`);
 }
@@ -592,7 +602,7 @@ async function fallBackWithReason(
   const rendered = renderPlain(draft);
 
   await deps.prisma.generatedDraft.updateMany({
-    where: { id: draft.id, status: "GENERATING" },
+    where: { id: draft.id, status: { in: ["GENERATING", "PENDING"] } },
     data: {
       status: "FALLBACK",
       fallbackReason: reason,
@@ -652,9 +662,8 @@ async function fallBackForQuota(
     where: { id: draft.campaignId },
     data: {
       errorMessage:
-        `The AI provider's daily quota is exhausted (${trigger}). ${total} draft(s) of this campaign ` +
-        "were prepared with the plain template and no AI intro. Generation continues automatically " +
-        "once the quota resets, or earlier if you raise LLM_RATE_LIMIT_PER_DAY.",
+        `${total} draft(s) were prepared with the plain template (no AI intro) because the daily AI quota ran out. ` +
+        "To personalize them, wait for the quota reset and create a new campaign.",
     },
   });
 
@@ -663,7 +672,7 @@ async function fallBackForQuota(
   );
 }
 
-/** FR-9: a rejected API key pauses the campaign, with the reason on the campaign. */
+/** FR-9: a rejected API key pauses the campaign, releasing the draft to PENDING. */
 async function pauseForAuthFailure(deps: GenerateDeps, draft: DraftWithRelations): Promise<void> {
   await deps.prisma.campaign.updateMany({
     where: { id: draft.campaignId },
@@ -675,16 +684,10 @@ async function pauseForAuthFailure(deps: GenerateDeps, draft: DraftWithRelations
     },
   });
 
-  const rendered = renderPlain(draft);
-
   await deps.prisma.generatedDraft.updateMany({
     where: { id: draft.id, status: "GENERATING" },
     data: {
-      status: "FALLBACK",
-      fallbackReason: "AUTH_FAILURE",
-      aiIntro: null,
-      subject: rendered.subject,
-      body: rendered.body,
+      status: "PENDING",
     },
   });
 }

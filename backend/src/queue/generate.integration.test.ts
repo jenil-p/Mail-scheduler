@@ -467,7 +467,7 @@ suite("generate worker (integration)", () => {
 
     const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
     expect(campaign?.status).toBe("GENERATING"); // a visible notice, not a pause
-    expect(campaign?.errorMessage).toContain("daily quota");
+    expect(campaign?.errorMessage).toContain("daily AI quota");
     expect(campaign?.errorMessage).toContain("3 draft(s)");
   });
 
@@ -633,7 +633,7 @@ suite("generate worker (integration)", () => {
     expect(draft?.status).toBe("PENDING"); // skipped, not claimed, not fallen back
   });
 
-  it("pauses the campaign on a rejected API key and falls the draft back", async () => {
+  it("pauses the campaign on a rejected API key and leaves the draft PENDING", async () => {
     const ai = aiConfig();
     const campaignId = await createCampaign({ recipients: [{}] });
     const [recipient] = await recipientsOf(campaignId);
@@ -649,8 +649,8 @@ suite("generate worker (integration)", () => {
     }, "the campaign to pause on the auth failure");
 
     const draft = await draftOf(campaignId, recipient.id);
-    expect(draft?.status).toBe("FALLBACK");
-    expect(draft?.fallbackReason).toBe("AUTH_FAILURE");
+    expect(draft?.status).toBe("PENDING");
+    expect(draft?.fallbackReason).toBeNull();
     expect(llm.callCount).toBe(1); // no retries for a 401
     expect(campaign.errorMessage).toContain("API key");
   });
@@ -756,5 +756,76 @@ suite("generate worker (integration)", () => {
     // The ids the worker had already finished are the ones it left alone.
     expect(before.has(firstDraftId)).toBe(true);
     expect(before.has(secondDraftId)).toBe(true);
+  });
+
+  it("ends in a bounded number of iterations with a terminal result under a saturated local limiter", async () => {
+    const ai = aiConfig({
+      LLM_RATE_LIMIT_PER_MIN: "1",
+      LLM_MAX_RETRIES: "2",
+      LLM_RETRY_BASE_MS: "250",
+      LLM_RETRY_MAX_MS: "500",
+    });
+    const campaignId = await createCampaign({ recipients: [{}] });
+    const [recipient] = await recipientsOf(campaignId);
+
+    await enqueue(campaignId, recipient.id, ai);
+
+    // Saturated limiter returning rate_limited with a small delay
+    const saturatedLimiter = {
+      tryAcquire: async () => ({ status: "rate_limited" as const, retryAfterMs: 250 }),
+    } as unknown as LlmLimiter;
+
+    const llm = new MockLlmClient();
+    const worker = createGenerateWorker({
+      prisma,
+      llm,
+      ai,
+      limiter: saturatedLimiter,
+      redis,
+      rateLimit: (ms) => queue.rateLimit(ms),
+      log: () => undefined,
+    });
+    workers.push(worker);
+
+    const fallen = await waitFor(async () => {
+      const draft = await draftOf(campaignId, recipient.id);
+      return draft?.status === "FALLBACK" ? draft : undefined;
+    }, "the draft to settle in FALLBACK under saturated limiter");
+
+    expect(llm.callCount).toBe(0);
+    expect(fallen.fallbackReason).toBe("RATE_LIMITED_PER_MINUTE");
+    expect(fallen.rateLimitHits).toBeGreaterThan(ai.maxRetries);
+  });
+
+  it("retries non-LLM transient errors up to the attempt limit, ending in FALLBACK UNKNOWN", async () => {
+    const ai = aiConfig({
+      LLM_MAX_RETRIES: "2",
+      LLM_RETRY_BASE_MS: "50",
+      LLM_RETRY_MAX_MS: "100",
+    });
+    const campaignId = await createCampaign({ recipients: [{}] });
+    const [recipient] = await recipientsOf(campaignId);
+
+    await enqueue(campaignId, recipient.id, ai);
+
+    let attemptsSeen = 0;
+    const llm = {
+      model: "mock-model",
+      generateJson: async () => {
+        attemptsSeen += 1;
+        throw new TypeError("Transient network/prisma socket error");
+      },
+    } as unknown as MockLlmClient;
+
+    startWorker(llm, ai);
+
+    const fallen = await waitFor(async () => {
+      const draft = await draftOf(campaignId, recipient.id);
+      return draft?.status === "FALLBACK" ? draft : undefined;
+    }, "the draft to fall back after non-LLM retries exhausted");
+
+    expect(attemptsSeen).toBe(1 + MAX_RETRIES);
+    expect(fallen.fallbackReason).toBe("UNKNOWN");
+    expect(fallen.aiIntro).toBeNull();
   });
 });

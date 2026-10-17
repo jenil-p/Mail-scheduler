@@ -46,8 +46,10 @@ export function safeErrorLog(error: unknown): string {
   if (error instanceof Error) {
     const code = (error as { code?: unknown }).code;
     const retryAfterMs = (error as { retryAfterMs?: unknown }).retryAfterMs;
+    const errorClass =
+      error.name && error.name !== "Error" ? error.name : error.constructor?.name || error.name;
     const parts = [
-      `${error.name}: ${redactText(error.message)}`,
+      `${errorClass}: ${redactText(error.message)}`,
       typeof code === "string" ? `code=${code}` : undefined,
       typeof retryAfterMs === "number" ? `retryAfterMs=${retryAfterMs}` : undefined,
     ].filter((part): part is string => part !== undefined);
