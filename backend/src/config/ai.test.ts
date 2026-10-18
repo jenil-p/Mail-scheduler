@@ -36,6 +36,9 @@ describe("parseAiConfig", () => {
       retryBackoffMaxMs: 60_000,
       maxOutputTokens: 512,
       thinkingBudget: 0,
+      // Phase 5a: campaign state machine and tick interval
+      instructionMaxLength: 500,
+      campaignTickMs: 15_000,
     });
   });
 
@@ -79,6 +82,8 @@ describe("parseAiConfig", () => {
       SAMPLE_SIZE: "3",
       MAX_RECIPIENTS_PER_CAMPAIGN: "1000",
       GENERATE_CONCURRENCY: "12",
+      AI_INSTRUCTION_MAX_LENGTH: "300",
+      CAMPAIGN_TICK_MS: "5000",
     });
 
     expect(ai.timeoutMs).toBe(20_000);
@@ -86,6 +91,8 @@ describe("parseAiConfig", () => {
     expect(ai.sampleSize).toBe(3);
     expect(ai.maxRecipientsPerCampaign).toBe(1000);
     expect(ai.generateConcurrency).toBe(12);
+    expect(ai.instructionMaxLength).toBe(300);
+    expect(ai.campaignTickMs).toBe(5000);
   });
 
   it.each([
@@ -95,6 +102,8 @@ describe("parseAiConfig", () => {
     ["0", "GENERATE_CONCURRENCY"],
     ["0", "LLM_RATE_LIMIT_PER_MIN"],
     ["1.5", "LLM_RATE_LIMIT_PER_DAY"],
+    ["999", "CAMPAIGN_TICK_MS"],
+    ["0", "AI_INSTRUCTION_MAX_LENGTH"],
   ])("rejects %s for %s with a readable error", (value, key) => {
     expect(() => parseAiConfig({ [key]: value })).toThrowError(new RegExp(key));
   });

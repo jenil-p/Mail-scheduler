@@ -122,6 +122,8 @@ export const aiConfigSchema = z
     introMaxChars: envInt(240, { min: 1, max: 2_000 }),
     templateBodyMaxLength: envInt(20_000, { min: 1, max: 1_000_000 }),
     templateSubjectMaxLength: envInt(300, { min: 1, max: 10_000 }),
+    instructionMaxLength: envInt(500, { min: 1, max: 10_000 }),
+    campaignTickMs: envInt(15_000, { min: 1_000, max: 3_600_000 }),
   })
   .superRefine((value, ctx) => {
     // Provider-independent rules first: they must hold for `mock` too.
@@ -205,6 +207,8 @@ export const AI_CONFIG_ENV_KEYS = {
   introMaxChars: "AI_INTRO_MAX_CHARS",
   templateBodyMaxLength: "TEMPLATE_BODY_MAX_LENGTH",
   templateSubjectMaxLength: "TEMPLATE_SUBJECT_MAX_LENGTH",
+  instructionMaxLength: "AI_INSTRUCTION_MAX_LENGTH",
+  campaignTickMs: "CAMPAIGN_TICK_MS",
 } as const satisfies Record<keyof AiConfig, string>;
 
 /**
@@ -238,6 +242,8 @@ export function parseAiConfig(env: Record<string, string | undefined>): AiConfig
     introMaxChars: env.AI_INTRO_MAX_CHARS,
     templateBodyMaxLength: env.TEMPLATE_BODY_MAX_LENGTH,
     templateSubjectMaxLength: env.TEMPLATE_SUBJECT_MAX_LENGTH,
+    instructionMaxLength: env.AI_INSTRUCTION_MAX_LENGTH,
+    campaignTickMs: env.CAMPAIGN_TICK_MS,
   });
 
   if (!result.success) {
