@@ -53,6 +53,19 @@ if (generateWorker) {
   console.log("[Generate] AI personalization is disabled — no generation worker started");
 }
 
+// Campaign tick runs reconciliation and status progression when AI personalization is enabled
+const stopCampaignTick: (() => void) | undefined = isAiPersonalizationEnabled()
+  ? (await import("./campaigns/tick")).startCampaignTick({
+      intervalMs: config.ai.campaignTickMs,
+    })
+  : undefined;
+
+if (stopCampaignTick) {
+  console.log(
+    `[Tick] Campaign tick started — interval: ${config.ai.campaignTickMs}ms`
+  );
+}
+
 // Recover pending jobs from DB that may have been lost from Redis
 // Uses BullMQ's jobId dedup so it's safe to run even when Redis is healthy
 recoverPendingJobs().then(({ recovered, skipped }) => {
@@ -70,6 +83,7 @@ app.listen(config.port, () => {
 // Graceful shutdown
 async function shutdown(): Promise<void> {
   console.log("Shutting down gracefully...");
+  stopCampaignTick?.();
   // Workers first (they finish the job in flight), then the queues they read from.
   await Promise.all([worker.close(), generateWorker?.close()]);
   await closeGenerateQueue();
