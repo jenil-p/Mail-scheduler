@@ -112,9 +112,9 @@ async function defaultEnqueue(jobs: FlowEnqueueItem[]): Promise<void> {
   }
 }
 
-async function safelyEnqueueJobs(
+export async function safelyEnqueueJobs(
   jobs: FlowEnqueueItem[],
-  deps: FlowDeps
+  deps: { enqueue?: (jobs: FlowEnqueueItem[]) => Promise<void>; logger?: { error: (message: string) => void } }
 ): Promise<void> {
   try {
     const enqueueFn = deps.enqueue ?? defaultEnqueue;
@@ -124,6 +124,54 @@ async function safelyEnqueueJobs(
     const logger = deps.logger ?? console;
     logger.error(`[Flow] enqueue failed: ${errClass}`);
   }
+}
+
+/**
+ * Shared helper: select sample recipients, create sample draft rows in DB, and return enqueue items.
+ * Used by startSampling, regenerateSamples, and resumeCampaign.
+ */
+export async function createSampleDrafts(
+  tx: any,
+  campaign: { id: string; templateHash: string },
+  fingerprint: string,
+  sampleSize: number,
+  knownRecipients?: Array<{ id: string }>
+): Promise<FlowEnqueueItem[]> {
+  const recipients = knownRecipients ?? (await listRecipients(tx, campaign.id));
+  const samples = selectSampleRecipients(recipients, sampleSize);
+
+  const sampleDrafts = samples.map((r) => {
+    const id = draftId({
+      campaignId: campaign.id,
+      recipientId: r.id,
+      templateHash: campaign.templateHash,
+      promptFingerprint: fingerprint,
+    });
+    return {
+      id,
+      campaignId: campaign.id,
+      recipientId: r.id,
+      isSample: true,
+      status: "PENDING" as const,
+      subject: "",
+      body: "",
+      promptVersion: fingerprint,
+    };
+  });
+
+  if (sampleDrafts.length > 0) {
+    await tx.generatedDraft.createMany({
+      data: sampleDrafts,
+      skipDuplicates: true,
+    });
+  }
+
+  return sampleDrafts.map((d) => ({
+    draftId: d.id,
+    campaignId: campaign.id,
+    recipientId: d.recipientId,
+    isSample: true,
+  }));
 }
 
 /**
@@ -165,33 +213,6 @@ export async function startSampling(
     if (recipients.length === 0) {
       throw new EmptyCampaignError(`Campaign ${campaignId} has zero recipients`);
     }
-    const samples = selectSampleRecipients(recipients, sampleSize);
-
-    const sampleDrafts = samples.map((r) => {
-      const id = draftId({
-        campaignId: campaign.id,
-        recipientId: r.id,
-        templateHash: campaign.templateHash,
-        promptFingerprint: fingerprint,
-      });
-      return {
-        id,
-        campaignId: campaign.id,
-        recipientId: r.id,
-        isSample: true,
-        status: "PENDING" as const,
-        subject: "",
-        body: "",
-        promptVersion: fingerprint,
-      };
-    });
-
-    if (sampleDrafts.length > 0) {
-      await tx.generatedDraft.createMany({
-        data: sampleDrafts,
-        skipDuplicates: true,
-      });
-    }
 
     await tx.campaign.update({
       where: { id: campaignId },
@@ -202,17 +223,18 @@ export async function startSampling(
       },
     });
 
+    createdJobs = await createSampleDrafts(
+      tx,
+      campaign,
+      fingerprint,
+      sampleSize,
+      recipients
+    );
+
     const moved = await transition(tx, campaignId, "DRAFT", "SAMPLING");
     if (!moved) {
       throw new IllegalTransitionError(campaign.status, "SAMPLING");
     }
-
-    createdJobs = sampleDrafts.map((d) => ({
-      draftId: d.id,
-      campaignId: campaign.id,
-      recipientId: d.recipientId,
-      isSample: true,
-    }));
   });
 
   // Enqueue jobs AFTER commit.
@@ -289,46 +311,17 @@ export async function regenerateSamples(
       },
     });
 
-    const recipients = await listRecipients(tx, campaignId);
-    const samples = selectSampleRecipients(recipients, sampleSize);
-
-    const sampleDrafts = samples.map((r) => {
-      const id = draftId({
-        campaignId: campaign.id,
-        recipientId: r.id,
-        templateHash: campaign.templateHash,
-        promptFingerprint: fingerprint,
-      });
-      return {
-        id,
-        campaignId: campaign.id,
-        recipientId: r.id,
-        isSample: true,
-        status: "PENDING" as const,
-        subject: "",
-        body: "",
-        promptVersion: fingerprint,
-      };
-    });
-
-    if (sampleDrafts.length > 0) {
-      await tx.generatedDraft.createMany({
-        data: sampleDrafts,
-        skipDuplicates: true,
-      });
-    }
+    createdJobs = await createSampleDrafts(
+      tx,
+      campaign,
+      fingerprint,
+      sampleSize
+    );
 
     const moved = await transition(tx, campaignId, "SAMPLE_REVIEW", "SAMPLING");
     if (!moved) {
       throw new IllegalTransitionError(campaign.status, "SAMPLING");
     }
-
-    createdJobs = sampleDrafts.map((d) => ({
-      draftId: d.id,
-      campaignId: campaign.id,
-      recipientId: d.recipientId,
-      isSample: true,
-    }));
   });
 
   // Enqueue jobs AFTER commit.
