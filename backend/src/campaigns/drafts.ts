@@ -15,6 +15,23 @@ import { renderCampaignEmail } from "./values";
 import { runGuardrails, type GuardrailFailure } from "../ai/guardrails";
 import { refreshCampaign } from "./flow";
 
+export const HARD_BLOCK_CODES = [
+  "FORBIDDEN_CONTENT",
+  "INJECTION_SUSPECTED",
+  "RENDER_INVALID",
+];
+
+export class HardBlockedError extends Error {
+  readonly code = "HARD_BLOCKED";
+  readonly blockedCodes: string[];
+
+  constructor(codes: string[]) {
+    super(`Cannot approve draft with hard-blocked codes: ${codes.join(", ")}`);
+    this.name = "HardBlockedError";
+    this.blockedCodes = codes;
+  }
+}
+
 export class DraftNotFoundError extends Error {
   readonly code = "DRAFT_NOT_FOUND";
 
@@ -51,6 +68,35 @@ export class StaleDraftError extends Error {
   }
 }
 
+export function extractFlagCodes(flagReasons: unknown): string[] {
+  if (!Array.isArray(flagReasons)) return [];
+  const codes: string[] = [];
+  for (const item of flagReasons) {
+    if (typeof item === "string") {
+      codes.push(item);
+    } else if (
+      item &&
+      typeof item === "object" &&
+      "code" in item &&
+      typeof (item as any).code === "string"
+    ) {
+      codes.push((item as any).code);
+    }
+  }
+  return codes;
+}
+
+export function getHardBlockedCodes(flagReasons: unknown): string[] {
+  const codes = extractFlagCodes(flagReasons);
+  const found = new Set<string>();
+  for (const c of codes) {
+    if (HARD_BLOCK_CODES.includes(c)) {
+      found.add(c);
+    }
+  }
+  return HARD_BLOCK_CODES.filter((c) => found.has(c));
+}
+
 export type ResolveDraftAction =
   | { type: "approve" }
   | { type: "use_plain" }
@@ -65,6 +111,11 @@ export interface ResolveDraftResult {
 export interface BulkResolveOptions {
   type: "approve" | "use_plain";
   codes?: string[];
+}
+
+export interface BulkResolveResult {
+  changed: number;
+  skippedHardBlocked: number;
 }
 
 export interface ListDraftsOptions {
@@ -155,6 +206,11 @@ export async function resolveDraft(
     finalFlagReasons = (draft.flagReasons as unknown[]) ?? [];
 
     if (action.type === "approve") {
+      const blocked = getHardBlockedCodes(draft.flagReasons);
+      if (blocked.length > 0) {
+        throw new HardBlockedError(blocked);
+      }
+
       const result = await tx.generatedDraft.updateMany({
         where: {
           id: draftId,
@@ -297,10 +353,11 @@ export async function bulkResolve(
   campaignId: string,
   options: BulkResolveOptions,
   deps: DraftDeps = {}
-): Promise<number> {
+): Promise<BulkResolveResult> {
   const db = deps.db ?? (await import("../db/pool")).prisma;
 
   let count = 0;
+  let skippedHardBlocked = 0;
 
   await db.$transaction(async (tx) => {
     const campaign = await tx.campaign.findUnique({
@@ -336,8 +393,8 @@ export async function bulkResolve(
     if (options.codes && options.codes.length > 0) {
       const codeSet = new Set(options.codes);
       targetDrafts = drafts.filter((d) => {
-        if (!Array.isArray(d.flagReasons)) return false;
-        return (d.flagReasons as unknown as GuardrailFailure[]).some((f) => codeSet.has(f.code));
+        const codes = extractFlagCodes(d.flagReasons);
+        return codes.some((code) => codeSet.has(code));
       });
     }
 
@@ -346,18 +403,29 @@ export async function bulkResolve(
     }
 
     if (options.type === "approve") {
-      const targetIds = targetDrafts.map((d) => d.id);
-      const res = await tx.generatedDraft.updateMany({
-        where: {
-          id: { in: targetIds },
-          status: "FLAGGED",
-        },
-        data: {
-          status: "APPROVED",
-          resolvedBy: "USER",
-        },
-      });
-      count = res.count;
+      const allowed: typeof targetDrafts = [];
+      for (const draft of targetDrafts) {
+        if (getHardBlockedCodes(draft.flagReasons).length > 0) {
+          skippedHardBlocked++;
+        } else {
+          allowed.push(draft);
+        }
+      }
+
+      if (allowed.length > 0) {
+        const targetIds = allowed.map((d) => d.id);
+        const res = await tx.generatedDraft.updateMany({
+          where: {
+            id: { in: targetIds },
+            status: "FLAGGED",
+          },
+          data: {
+            status: "APPROVED",
+            resolvedBy: "USER",
+          },
+        });
+        count = res.count;
+      }
     } else if (options.type === "use_plain") {
       for (const draft of targetDrafts) {
         const rendered = renderCampaignEmail({
@@ -400,7 +468,7 @@ export async function bulkResolve(
   const refreshFn = deps.refreshCampaign ?? refreshCampaign;
   await refreshFn(campaignId, { db });
 
-  return count;
+  return { changed: count, skippedHardBlocked };
 }
 
 /**

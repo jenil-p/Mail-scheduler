@@ -8,6 +8,8 @@ import {
   StaleDraftError,
   DraftNotFoundError,
   CampaignNotFoundError,
+  HARD_BLOCK_CODES,
+  HardBlockedError,
 } from "./drafts";
 import type { CampaignStatus, DraftStatus } from "../generated/prisma/client";
 
@@ -357,6 +359,72 @@ describe("drafts.ts - resolveDraft", () => {
     });
     expect(second.applied).toBe(false);
   });
+
+  it("throws HardBlockedError when approving a draft with hard-block codes and changes nothing", async () => {
+    for (const code of HARD_BLOCK_CODES) {
+      const blockedDraft = {
+        ...baseDraft,
+        id: `draft-blocked-${code}`,
+        status: "FLAGGED" as DraftStatus,
+        flagReasons: [{ code, message: `Failed ${code}` }],
+      };
+
+      const { client, drafts: draftMap } = createFakeDb({
+        campaigns: [baseCampaign],
+        recipients: [baseRecipient],
+        drafts: [blockedDraft],
+      });
+
+      let thrownErr: any;
+      try {
+        await resolveDraft(blockedDraft.id, { type: "approve" }, { db: client as any });
+      } catch (err) {
+        thrownErr = err;
+      }
+
+      expect(thrownErr).toBeInstanceOf(HardBlockedError);
+      expect(thrownErr.code).toBe("HARD_BLOCKED");
+      expect(thrownErr.message).toContain(code);
+      expect(draftMap.get(blockedDraft.id).status).toBe("FLAGGED");
+    }
+  });
+
+  it("allows use_plain and edit for drafts with hard-block codes", async () => {
+    const blockedDraft = {
+      ...baseDraft,
+      id: "draft-hard-blocked",
+      status: "FLAGGED" as DraftStatus,
+      flagReasons: [{ code: "FORBIDDEN_CONTENT", message: "Forbidden content detected" }],
+    };
+
+    // 1. use_plain resolves to FALLBACK
+    const { client: client1, drafts: draftMap1 } = createFakeDb({
+      campaigns: [baseCampaign],
+      recipients: [baseRecipient],
+      drafts: [blockedDraft],
+    });
+
+    const plainRes = await resolveDraft("draft-hard-blocked", { type: "use_plain" }, { db: client1 as any });
+    expect(plainRes.applied).toBe(true);
+    expect(plainRes.status).toBe("FALLBACK");
+    expect(draftMap1.get("draft-hard-blocked").status).toBe("FALLBACK");
+
+    // 2. edit with valid intro resolves to APPROVED
+    const { client: client2, drafts: draftMap2 } = createFakeDb({
+      campaigns: [baseCampaign],
+      recipients: [baseRecipient],
+      drafts: [blockedDraft],
+    });
+
+    const editRes = await resolveDraft(
+      "draft-hard-blocked",
+      { type: "edit", aiIntro: "Clean valid intro about Acme" },
+      { db: client2 as any }
+    );
+    expect(editRes.applied).toBe(true);
+    expect(editRes.status).toBe("APPROVED");
+    expect(draftMap2.get("draft-hard-blocked").status).toBe("APPROVED");
+  });
 });
 
 describe("drafts.ts - bulkResolve", () => {
@@ -417,12 +485,12 @@ describe("drafts.ts - bulkResolve", () => {
       drafts,
     });
 
-    const count = await bulkResolve("camp-1", { type: "approve" }, {
+    const res = await bulkResolve("camp-1", { type: "approve" }, {
       db: client as any,
       refreshCampaign: refreshFn,
     });
 
-    expect(count).toBe(2);
+    expect(res).toEqual({ changed: 2, skippedHardBlocked: 0 });
     expect(draftMap.get("draft-1").status).toBe("APPROVED");
     expect(draftMap.get("draft-2").status).toBe("APPROVED");
     expect(draftMap.get("draft-3").status).toBe("READY");
@@ -437,7 +505,7 @@ describe("drafts.ts - bulkResolve", () => {
       drafts,
     });
 
-    const count = await bulkResolve("camp-1", {
+    const res = await bulkResolve("camp-1", {
       type: "approve",
       codes: ["BANNED_PHRASE"],
     }, {
@@ -445,7 +513,7 @@ describe("drafts.ts - bulkResolve", () => {
       refreshCampaign: refreshFn,
     });
 
-    expect(count).toBe(1);
+    expect(res).toEqual({ changed: 1, skippedHardBlocked: 0 });
     expect(draftMap.get("draft-1").status).toBe("APPROVED");
     expect(draftMap.get("draft-2").status).toBe("FLAGGED");
     expect(refreshFn).toHaveBeenCalledTimes(1);
@@ -459,17 +527,58 @@ describe("drafts.ts - bulkResolve", () => {
       drafts,
     });
 
-    const count = await bulkResolve("camp-1", { type: "use_plain" }, {
+    const res = await bulkResolve("camp-1", { type: "use_plain" }, {
       db: client as any,
       refreshCampaign: refreshFn,
     });
 
-    expect(count).toBe(2);
+    expect(res).toEqual({ changed: 2, skippedHardBlocked: 0 });
     expect(draftMap.get("draft-1").status).toBe("FALLBACK");
     expect(draftMap.get("draft-1").fallbackReason).toBe("USER_PLAIN");
     expect(draftMap.get("draft-2").status).toBe("FALLBACK");
     expect(draftMap.get("draft-2").fallbackReason).toBe("USER_PLAIN");
     expect(refreshFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips drafts with hard-block codes when type is approve", async () => {
+    const mixedDrafts = [
+      {
+        id: "d-regular",
+        campaignId: "camp-1",
+        recipientId: "rec-1",
+        promptVersion: "fp-v1",
+        status: "FLAGGED" as DraftStatus,
+        flagReasons: [{ code: "TOO_LONG", message: "Too long" }],
+      },
+      {
+        id: "d-forbidden",
+        campaignId: "camp-1",
+        recipientId: "rec-2",
+        promptVersion: "fp-v1",
+        status: "FLAGGED" as DraftStatus,
+        flagReasons: [{ code: "FORBIDDEN_CONTENT", message: "Forbidden" }],
+      },
+      {
+        id: "d-injection",
+        campaignId: "camp-1",
+        recipientId: "rec-3",
+        promptVersion: "fp-v1",
+        status: "FLAGGED" as DraftStatus,
+        flagReasons: [{ code: "INJECTION_SUSPECTED", message: "Injection" }],
+      },
+    ];
+
+    const { client, drafts: draftMap } = createFakeDb({
+      campaigns: [baseCampaign],
+      recipients,
+      drafts: mixedDrafts,
+    });
+
+    const res = await bulkResolve("camp-1", { type: "approve" }, { db: client as any });
+    expect(res).toEqual({ changed: 1, skippedHardBlocked: 2 });
+    expect(draftMap.get("d-regular").status).toBe("APPROVED");
+    expect(draftMap.get("d-forbidden").status).toBe("FLAGGED");
+    expect(draftMap.get("d-injection").status).toBe("FLAGGED");
   });
 });
 

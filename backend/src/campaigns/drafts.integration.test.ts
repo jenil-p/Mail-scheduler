@@ -341,23 +341,23 @@ suite("campaign drafts resolution (integration)", () => {
     });
 
     // 1. Bulk resolve with codes filter for BANNED_PHRASE
-    const count1 = await bulkResolve(campaignId, {
+    const res1 = await bulkResolve(campaignId, {
       type: "approve",
       codes: ["BANNED_PHRASE"],
     }, { db: prisma });
 
-    expect(count1).toBe(1);
+    expect(res1).toEqual({ changed: 1, skippedHardBlocked: 0 });
 
     // 1 FLAGGED draft remains -> campaign still in EXCEPTION_REVIEW
     const campStillReview = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
     expect(campStillReview.status).toBe("EXCEPTION_REVIEW");
 
     // 2. Bulk resolve remaining FLAGGED draft using use_plain
-    const count2 = await bulkResolve(campaignId, {
+    const res2 = await bulkResolve(campaignId, {
       type: "use_plain",
     }, { db: prisma });
 
-    expect(count2).toBe(1);
+    expect(res2).toEqual({ changed: 1, skippedHardBlocked: 0 });
 
     // No FLAGGED drafts remain -> refreshCampaign moved campaign to SCHEDULED!
     const campScheduled = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
