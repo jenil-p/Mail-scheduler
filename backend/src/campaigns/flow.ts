@@ -43,6 +43,15 @@ export class InvalidInstructionError extends Error {
   }
 }
 
+export class EmptyCampaignError extends Error {
+  readonly code = "EMPTY_CAMPAIGN";
+
+  constructor(message = "Campaign has zero recipients") {
+    super(message);
+    this.name = "EmptyCampaignError";
+  }
+}
+
 export interface FlowEnqueueItem {
   draftId: string;
   campaignId: string;
@@ -153,6 +162,9 @@ export async function startSampling(
     });
 
     const recipients = await listRecipients(tx, campaignId);
+    if (recipients.length === 0) {
+      throw new EmptyCampaignError(`Campaign ${campaignId} has zero recipients`);
+    }
     const samples = selectSampleRecipients(recipients, sampleSize);
 
     const sampleDrafts = samples.map((r) => {

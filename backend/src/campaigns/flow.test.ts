@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   approveSamples,
+  EmptyCampaignError,
   InvalidInstructionError,
   refreshCampaign,
   regenerateSamples,
@@ -221,6 +222,36 @@ describe("flow", () => {
       await expect(startSampling("c1", { db, identity: defaultIdentity })).rejects.toThrow(
         /AI personalization disabled/
       );
+    });
+
+    it("throws EmptyCampaignError (code EMPTY_CAMPAIGN) before changing anything if campaign has zero recipients", async () => {
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            status: "DRAFT",
+            aiEnabled: true,
+            templateHash: "thash1",
+          },
+        ],
+        recipients: [],
+      });
+
+      let err: any;
+      try {
+        await startSampling("c1", { db, identity: defaultIdentity });
+      } catch (e) {
+        err = e;
+      }
+
+      expect(err).toBeInstanceOf(EmptyCampaignError);
+      expect(err.code).toBe("EMPTY_CAMPAIGN");
+
+      // Verify DB remains completely unchanged
+      const campaign = db._state.campaigns.get("c1");
+      expect(campaign.status).toBe("DRAFT");
+      expect(campaign.promptFingerprint).toBeUndefined();
+      expect(db._state.drafts.size).toBe(0);
     });
 
     it("leaves drafts PENDING in database and resolves ok if enqueue throws after commit", async () => {
