@@ -68,6 +68,15 @@ export class StaleDraftError extends Error {
   }
 }
 
+export class IntroTooLongError extends Error {
+  readonly code = "INTRO_TOO_LONG";
+
+  constructor(message = "AI intro exceeds maximum allowed length of 4x introMaxChars") {
+    super(message);
+    this.name = "IntroTooLongError";
+  }
+}
+
 export function extractFlagCodes(flagReasons: unknown): string[] {
   if (!Array.isArray(flagReasons)) return [];
   const codes: string[] = [];
@@ -274,6 +283,12 @@ export async function resolveDraft(
       }
     } else if (action.type === "edit") {
       const trimmedIntro = action.aiIntro.trim();
+      const introMaxChars = ai.introMaxChars ?? 240;
+      if (trimmedIntro.length > introMaxChars * 4) {
+        throw new IntroTooLongError(
+          `AI intro length ${trimmedIntro.length} exceeds hard limit of ${introMaxChars * 4} characters`
+        );
+      }
 
       const rendered = renderCampaignEmail({
         subjectTemplate: draft.campaign.subjectTemplate,

@@ -10,6 +10,7 @@ import {
   CampaignNotFoundError,
   HARD_BLOCK_CODES,
   HardBlockedError,
+  IntroTooLongError,
 } from "./drafts";
 import type { CampaignStatus, DraftStatus } from "../generated/prisma/client";
 
@@ -295,6 +296,62 @@ describe("drafts.ts - resolveDraft", () => {
     expect(updated.aiIntro).toBe("Hello Alice, I noticed your post online.");
     expect(updated.resolvedBy).toBe("USER");
     expect(refreshFn).toHaveBeenCalledWith("camp-1", expect.anything());
+  });
+
+  it("edit-too-long: throws IntroTooLongError when trimmed aiIntro > ai.introMaxChars * 4 before rendering", async () => {
+    const { client, drafts } = createFakeDb({
+      campaigns: [baseCampaign],
+      recipients: [baseRecipient],
+      drafts: [baseDraft],
+    });
+
+    const ai = { introMaxChars: 100 } as any;
+    // 401 characters > 100 * 4 = 400
+    const overSizedIntro = "a".repeat(401);
+
+    let thrown: any;
+    try {
+      await resolveDraft(
+        "draft-1",
+        { type: "edit", aiIntro: overSizedIntro },
+        { db: client as any, ai }
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(IntroTooLongError);
+    expect(thrown.code).toBe("INTRO_TOO_LONG");
+    // Draft remains unchanged
+    expect(drafts.get("draft-1").status).toBe("FLAGGED");
+    expect(drafts.get("draft-1").aiIntro).toBe("Bad intro");
+  });
+
+  it("edit: intro over introMaxChars but within 4x bound still goes through guardrails and is flagged TOO_LONG", async () => {
+    const { client, drafts } = createFakeDb({
+      campaigns: [baseCampaign],
+      recipients: [baseRecipient],
+      drafts: [baseDraft],
+    });
+
+    const ai = { introMaxChars: 50 } as any;
+    // 80 chars: > 50 but <= 200 (4 * 50)
+    const moderatelyLongIntro = "This intro is eighty characters long for testing the length guardrail threshold.";
+
+    const res = await resolveDraft(
+      "draft-1",
+      { type: "edit", aiIntro: moderatelyLongIntro },
+      { db: client as any, ai }
+    );
+
+    expect(res.applied).toBe(true);
+    expect(res.status).toBe("FLAGGED");
+    const flagCodes = (res.flagReasons as any[]).map((f) => f.code);
+    expect(flagCodes).toContain("TOO_LONG");
+
+    const updated = drafts.get("draft-1");
+    expect(updated.status).toBe("FLAGGED");
+    expect(updated.aiIntro).toBe(moderatelyLongIntro);
   });
 
   it("throws CampaignNotUnderReviewError when campaign is not in EXCEPTION_REVIEW", async () => {
