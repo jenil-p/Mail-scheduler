@@ -580,6 +580,52 @@ describe("drafts.ts - bulkResolve", () => {
     expect(draftMap.get("d-forbidden").status).toBe("FLAGGED");
     expect(draftMap.get("d-injection").status).toBe("FLAGGED");
   });
+
+  it("processes target drafts in chunks of 50, each chunk in its own short transaction", async () => {
+    // Generate 105 flagged drafts
+    const manyDrafts: any[] = [];
+    const manyRecipients: any[] = [];
+    for (let i = 1; i <= 105; i++) {
+      const recId = `rec-chunk-${i}`;
+      manyRecipients.push({
+        id: recId,
+        campaignId: "camp-1",
+        email: `user${i}@test.com`,
+        firstName: `User${i}`,
+      });
+      manyDrafts.push({
+        id: `draft-chunk-${i}`,
+        campaignId: "camp-1",
+        recipientId: recId,
+        promptVersion: "fp-v1",
+        status: "FLAGGED" as DraftStatus,
+        flagReasons: [{ code: "GREETING", message: "Greeting found" }],
+        subject: `Sub ${i}`,
+        body: `Body ${i}`,
+      });
+    }
+
+    const { client, drafts: draftMap } = createFakeDb({
+      campaigns: [baseCampaign],
+      recipients: manyRecipients,
+      drafts: manyDrafts,
+    });
+
+    const refreshFn = vi.fn(async () => ({ refreshed: false }));
+    const res = await bulkResolve(
+      "camp-1",
+      { type: "approve" },
+      { db: client as any, refreshCampaign: refreshFn }
+    );
+
+    expect(res).toEqual({ changed: 105, skippedHardBlocked: 0 });
+    // 105 drafts in chunks of 50 = 3 chunks (50 + 50 + 5) -> $transaction called 3 times
+    expect(client.$transaction).toHaveBeenCalledTimes(3);
+
+    for (let i = 1; i <= 105; i++) {
+      expect(draftMap.get(`draft-chunk-${i}`).status).toBe("APPROVED");
+    }
+  });
 });
 
 describe("drafts.ts - listDrafts", () => {

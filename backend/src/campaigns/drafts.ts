@@ -152,10 +152,13 @@ export interface CampaignSummary {
   counts: Record<DraftStatus, number>;
 }
 
+export const BULK_RESOLVE_CHUNK_SIZE = 50;
+
 export interface DraftDeps {
   db?: PrismaClient;
   ai?: AiConfig;
   refreshCampaign?: (campaignId: string, deps?: any) => Promise<any>;
+  chunkSize?: number;
 }
 
 /**
@@ -356,64 +359,69 @@ export async function bulkResolve(
 ): Promise<BulkResolveResult> {
   const db = deps.db ?? (await import("../db/pool")).prisma;
 
-  let count = 0;
+  const campaign = await db.campaign.findUnique({
+    where: { id: campaignId },
+  });
+
+  if (!campaign) {
+    throw new CampaignNotFoundError(`Campaign ${campaignId} does not exist`);
+  }
+
+  if (campaign.status !== "EXCEPTION_REVIEW") {
+    throw new CampaignNotUnderReviewError(
+      `Campaign ${campaignId} is in status ${campaign.status}, expected EXCEPTION_REVIEW`
+    );
+  }
+
+  if (!campaign.promptFingerprint) {
+    return { changed: 0, skippedHardBlocked: 0 };
+  }
+
+  const drafts = await db.generatedDraft.findMany({
+    where: {
+      campaignId,
+      promptVersion: campaign.promptFingerprint,
+      status: "FLAGGED",
+    },
+    include: {
+      recipient: true,
+    },
+    orderBy: { id: "asc" },
+  });
+
+  let targetDrafts = drafts;
+  if (options.codes && options.codes.length > 0) {
+    const codeSet = new Set(options.codes);
+    targetDrafts = drafts.filter((d) => {
+      const codes = extractFlagCodes(d.flagReasons);
+      return codes.some((code) => codeSet.has(code));
+    });
+  }
+
   let skippedHardBlocked = 0;
+  let draftsToProcess = targetDrafts;
 
-  await db.$transaction(async (tx) => {
-    const campaign = await tx.campaign.findUnique({
-      where: { id: campaignId },
-    });
-
-    if (!campaign) {
-      throw new CampaignNotFoundError(`Campaign ${campaignId} does not exist`);
-    }
-
-    if (campaign.status !== "EXCEPTION_REVIEW") {
-      throw new CampaignNotUnderReviewError(
-        `Campaign ${campaignId} is in status ${campaign.status}, expected EXCEPTION_REVIEW`
-      );
-    }
-
-    if (!campaign.promptFingerprint) {
-      return;
-    }
-
-    const drafts = await tx.generatedDraft.findMany({
-      where: {
-        campaignId,
-        promptVersion: campaign.promptFingerprint,
-        status: "FLAGGED",
-      },
-      include: {
-        recipient: true,
-      },
-    });
-
-    let targetDrafts = drafts;
-    if (options.codes && options.codes.length > 0) {
-      const codeSet = new Set(options.codes);
-      targetDrafts = drafts.filter((d) => {
-        const codes = extractFlagCodes(d.flagReasons);
-        return codes.some((code) => codeSet.has(code));
-      });
-    }
-
-    if (targetDrafts.length === 0) {
-      return;
-    }
-
-    if (options.type === "approve") {
-      const allowed: typeof targetDrafts = [];
-      for (const draft of targetDrafts) {
-        if (getHardBlockedCodes(draft.flagReasons).length > 0) {
-          skippedHardBlocked++;
-        } else {
-          allowed.push(draft);
-        }
+  if (options.type === "approve") {
+    const allowed: typeof targetDrafts = [];
+    for (const draft of targetDrafts) {
+      if (getHardBlockedCodes(draft.flagReasons).length > 0) {
+        skippedHardBlocked++;
+      } else {
+        allowed.push(draft);
       }
+    }
+    draftsToProcess = allowed;
+  }
 
-      if (allowed.length > 0) {
-        const targetIds = allowed.map((d) => d.id);
+  const chunkSize = deps.chunkSize ?? BULK_RESOLVE_CHUNK_SIZE;
+  let changed = 0;
+
+  for (let i = 0; i < draftsToProcess.length; i += chunkSize) {
+    const chunk = draftsToProcess.slice(i, i + chunkSize);
+    const chunkCount = await db.$transaction(async (tx) => {
+      let subCount = 0;
+      if (options.type === "approve") {
+        const targetIds = chunk.map((d) => d.id);
         const res = await tx.generatedDraft.updateMany({
           where: {
             id: { in: targetIds },
@@ -424,51 +432,54 @@ export async function bulkResolve(
             resolvedBy: "USER",
           },
         });
-        count = res.count;
-      }
-    } else if (options.type === "use_plain") {
-      for (const draft of targetDrafts) {
-        const rendered = renderCampaignEmail({
-          subjectTemplate: campaign.subjectTemplate,
-          bodyTemplate: campaign.bodyTemplate,
-          recipient: {
-            firstName: draft.recipient.firstName,
-            company: draft.recipient.company,
-            role: draft.recipient.role,
-            note: draft.recipient.note,
-            extra: (draft.recipient.extra ?? undefined) as Record<string, unknown> | undefined,
-          },
-          campaign: {
-            linkUrl: campaign.linkUrl,
-            unsubscribeUrl: campaign.unsubscribeUrl,
-          },
-          aiIntro: undefined,
-        });
+        subCount = res.count;
+      } else if (options.type === "use_plain") {
+        for (const draft of chunk) {
+          const rendered = renderCampaignEmail({
+            subjectTemplate: campaign.subjectTemplate,
+            bodyTemplate: campaign.bodyTemplate,
+            recipient: {
+              firstName: draft.recipient.firstName,
+              company: draft.recipient.company,
+              role: draft.recipient.role,
+              note: draft.recipient.note,
+              extra: (draft.recipient.extra ?? undefined) as Record<string, unknown> | undefined,
+            },
+            campaign: {
+              linkUrl: campaign.linkUrl,
+              unsubscribeUrl: campaign.unsubscribeUrl,
+            },
+            aiIntro: undefined,
+          });
 
-        const res = await tx.generatedDraft.updateMany({
-          where: {
-            id: draft.id,
-            status: "FLAGGED",
-          },
-          data: {
-            status: "FALLBACK",
-            aiIntro: null,
-            subject: rendered.subject,
-            body: rendered.body,
-            fallbackReason: "USER_PLAIN",
-            resolvedBy: "USER",
-            flagReasons: Prisma.DbNull,
-          },
-        });
-        count += res.count;
+          const res = await tx.generatedDraft.updateMany({
+            where: {
+              id: draft.id,
+              status: "FLAGGED",
+            },
+            data: {
+              status: "FALLBACK",
+              aiIntro: null,
+              subject: rendered.subject,
+              body: rendered.body,
+              fallbackReason: "USER_PLAIN",
+              resolvedBy: "USER",
+              flagReasons: Prisma.DbNull,
+            },
+          });
+          subCount += res.count;
+        }
       }
-    }
-  });
+      return subCount;
+    });
+
+    changed += chunkCount;
+  }
 
   const refreshFn = deps.refreshCampaign ?? refreshCampaign;
   await refreshFn(campaignId, { db });
 
-  return { changed: count, skippedHardBlocked };
+  return { changed, skippedHardBlocked };
 }
 
 /**
