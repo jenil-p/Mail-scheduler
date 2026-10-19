@@ -154,6 +154,23 @@ function createFakeDb(initialState: {
         }
         return { count };
       }),
+      groupBy: vi.fn(async ({ by, where }: { by: string[]; where: any }) => {
+        let list = Array.from(drafts.values());
+        if (where?.campaignId) {
+          list = list.filter((d) => d.campaignId === where.campaignId);
+        }
+        if (where?.promptVersion) {
+          list = list.filter((d) => d.promptVersion === where.promptVersion);
+        }
+        const statusCounts = new Map<string, number>();
+        for (const item of list) {
+          statusCounts.set(item.status, (statusCounts.get(item.status) ?? 0) + 1);
+        }
+        return Array.from(statusCounts.entries()).map(([status, count]) => ({
+          status,
+          _count: { _all: count },
+        }));
+      }),
     },
     $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(client)),
   };
@@ -900,5 +917,15 @@ describe("drafts.ts - getCampaignSummary", () => {
     expect(summary.draftCounts.APPROVED).toBe(1);
     expect(summary.draftCounts.FALLBACK).toBe(0);
     expect(summary.counts).toEqual(summary.draftCounts);
+    expect(client.generatedDraft.groupBy).toHaveBeenCalledWith({
+      by: ["status"],
+      where: {
+        campaignId: "camp-1",
+        promptVersion: "fp-v1",
+      },
+      _count: {
+        _all: true,
+      },
+    });
   });
 });

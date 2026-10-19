@@ -627,36 +627,20 @@ export async function getCampaignSummary(
   };
 
   if (campaign.promptFingerprint) {
-    if (typeof (db.generatedDraft as any).groupBy === "function") {
-      const grouped = await (db.generatedDraft as any).groupBy({
-        by: ["status"],
-        where: {
-          campaignId,
-          promptVersion: campaign.promptFingerprint,
-        },
-        _count: {
-          _all: true,
-        },
-      });
+    const grouped = await db.generatedDraft.groupBy({
+      by: ["status"],
+      where: {
+        campaignId,
+        promptVersion: campaign.promptFingerprint,
+      },
+      _count: {
+        _all: true,
+      },
+    });
 
-      for (const row of grouped) {
-        if (row.status in counts) {
-          counts[row.status as DraftStatus] = row._count._all;
-        }
-      }
-    } else {
-      const drafts = await db.generatedDraft.findMany({
-        where: {
-          campaignId,
-          promptVersion: campaign.promptFingerprint,
-        },
-        select: { status: true },
-      });
-
-      for (const d of drafts) {
-        if (d.status in counts) {
-          counts[d.status as DraftStatus]++;
-        }
+    for (const row of grouped) {
+      if (row.status in counts) {
+        counts[row.status as DraftStatus] = row._count._all;
       }
     }
   }
