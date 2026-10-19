@@ -54,7 +54,7 @@ if (generateWorker) {
 }
 
 // Campaign tick runs reconciliation and status progression when AI personalization is enabled
-const stopCampaignTick: (() => void) | undefined = isAiPersonalizationEnabled()
+const stopCampaignTick: (() => Promise<void>) | undefined = isAiPersonalizationEnabled()
   ? (await import("./campaigns/tick")).startCampaignTick({
       intervalMs: config.ai.campaignTickMs,
     })
@@ -83,7 +83,9 @@ app.listen(config.port, () => {
 // Graceful shutdown
 async function shutdown(): Promise<void> {
   console.log("Shutting down gracefully...");
-  stopCampaignTick?.();
+  if (stopCampaignTick) {
+    await stopCampaignTick();
+  }
   // Workers first (they finish the job in flight), then the queues they read from.
   await Promise.all([worker.close(), generateWorker?.close()]);
   await closeGenerateQueue();

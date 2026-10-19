@@ -151,7 +151,10 @@ describe("tick", () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(runCount).toBe(3);
 
-      stop();
+      await vi.advanceTimersByTimeAsync(60);
+      expect(maxOverlap).toBe(1);
+
+      await stop();
 
       // Advancing further after stop does not trigger more runs
       await vi.advanceTimersByTimeAsync(5000);
@@ -171,13 +174,65 @@ describe("tick", () => {
       // Run once at start
       expect(reconcile).toHaveBeenCalledTimes(1);
 
-      stop();
+      await stop();
 
       // Advance timers by multiple intervals
       await vi.advanceTimersByTimeAsync(5000);
 
       // Should still be only 1 call
       expect(reconcile).toHaveBeenCalledTimes(1);
+    });
+
+    it("stop() during a slow run resolves only after that run ends and no further run is scheduled", async () => {
+      let runFinished = false;
+      let runCount = 0;
+
+      let resolveSlowRun!: () => void;
+      const slowWork = new Promise<void>((resolve) => {
+        resolveSlowRun = resolve;
+      });
+
+      const deps: CampaignTickDeps = {
+        db: {
+          campaign: { findMany: vi.fn().mockResolvedValue([]) },
+        } as any,
+        reconcile: vi.fn().mockImplementation(async () => {
+          runCount++;
+          await slowWork;
+          runFinished = true;
+          return { reconciledCount: 0, draftIds: [] };
+        }),
+        refresh: vi.fn().mockResolvedValue({ refreshed: false }),
+        logger: { info: vi.fn(), error: vi.fn() },
+      };
+
+      const stop = startCampaignTick({ intervalMs: 1000 }, deps);
+
+      // Initial run started but is waiting on slowWork
+      expect(runCount).toBe(1);
+      expect(runFinished).toBe(false);
+
+      // Call stop() while the slow run is in flight
+      let stopResolved = false;
+      const stopPromise = stop().then(() => {
+        stopResolved = true;
+      });
+
+      // Allow microtasks to execute: stopPromise must NOT have resolved yet
+      await Promise.resolve();
+      expect(stopResolved).toBe(false);
+      expect(runFinished).toBe(false);
+
+      // Complete the slow in-flight run
+      resolveSlowRun();
+      await stopPromise;
+
+      expect(stopResolved).toBe(true);
+      expect(runFinished).toBe(true);
+
+      // Advance timers by multiple intervals: no further run should be scheduled
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(runCount).toBe(1);
     });
   });
 });

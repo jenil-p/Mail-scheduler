@@ -93,29 +93,35 @@ export async function executeCampaignTickRun(deps: CampaignTickDeps = {}): Promi
 
 /**
  * Start the recurring campaign tick background worker.
- * Returns a stop function.
+ * Returns an async stop function that clears the timer, sets stopped, and awaits the in-flight run if there is one.
  */
 export function startCampaignTick(
   options: CampaignTickOptions = {},
   deps: CampaignTickDeps = {}
-): () => void {
+): () => Promise<void> {
   const intervalMs = options.intervalMs ?? config.ai.campaignTickMs;
 
   let isRunning = false;
+  let inFlightRun: Promise<void> | null = null;
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
 
   const runTick = async () => {
     if (stopped || isRunning) return;
     isRunning = true;
-    try {
-      await executeCampaignTickRun(deps);
-    } finally {
-      isRunning = false;
-      if (!stopped) {
-        scheduleNext();
+    const currentRun = (async () => {
+      try {
+        await executeCampaignTickRun(deps);
+      } finally {
+        isRunning = false;
+        inFlightRun = null;
+        if (!stopped) {
+          scheduleNext();
+        }
       }
-    }
+    })();
+    inFlightRun = currentRun;
+    await currentRun;
   };
 
   const scheduleNext = () => {
@@ -129,11 +135,14 @@ export function startCampaignTick(
   // Run once immediately at start
   void runTick();
 
-  return () => {
+  return async () => {
     stopped = true;
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
+    }
+    if (inFlightRun !== null) {
+      await inFlightRun;
     }
   };
 }
