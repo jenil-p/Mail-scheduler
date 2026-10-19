@@ -425,6 +425,30 @@ describe("drafts.ts - resolveDraft", () => {
     expect(editRes.status).toBe("APPROVED");
     expect(draftMap2.get("draft-hard-blocked").status).toBe("APPROVED");
   });
+
+  it("survives refreshCampaign throwing after commit: logs error class and returns normally", async () => {
+    const refreshFn = vi.fn(async () => {
+      throw new TypeError("Database connection timeout during refresh");
+    });
+    const logger = { error: vi.fn(), info: vi.fn() };
+    const { client, drafts: draftMap } = createFakeDb({
+      campaigns: [baseCampaign],
+      recipients: [baseRecipient],
+      drafts: [baseDraft],
+    });
+
+    const res = await resolveDraft(
+      "draft-1",
+      { type: "approve" },
+      { db: client as any, refreshCampaign: refreshFn, logger }
+    );
+
+    expect(res.applied).toBe(true);
+    expect(res.status).toBe("APPROVED");
+    expect(draftMap.get("draft-1").status).toBe("APPROVED");
+    expect(refreshFn).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith("[Drafts] refreshCampaign failed: TypeError");
+  });
 });
 
 describe("drafts.ts - bulkResolve", () => {
@@ -625,6 +649,30 @@ describe("drafts.ts - bulkResolve", () => {
     for (let i = 1; i <= 105; i++) {
       expect(draftMap.get(`draft-chunk-${i}`).status).toBe("APPROVED");
     }
+  });
+
+  it("survives refreshCampaign throwing after commit: logs error class and returns normally", async () => {
+    const refreshFn = vi.fn(async () => {
+      throw new TypeError("Refresh network failed");
+    });
+    const logger = { error: vi.fn(), info: vi.fn() };
+    const { client, drafts: draftMap } = createFakeDb({
+      campaigns: [baseCampaign],
+      recipients,
+      drafts,
+    });
+
+    const res = await bulkResolve(
+      "camp-1",
+      { type: "approve" },
+      { db: client as any, refreshCampaign: refreshFn, logger }
+    );
+
+    expect(res).toEqual({ changed: 2, skippedHardBlocked: 0 });
+    expect(draftMap.get("draft-1").status).toBe("APPROVED");
+    expect(draftMap.get("draft-2").status).toBe("APPROVED");
+    expect(refreshFn).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith("[Drafts] refreshCampaign failed: TypeError");
   });
 });
 

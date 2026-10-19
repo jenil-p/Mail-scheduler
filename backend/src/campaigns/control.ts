@@ -215,7 +215,13 @@ export async function resumeCampaign(
 
   if (shouldReconcile) {
     const reconcileFn = deps.reconcile ?? reconcileGeneration;
-    await reconcileFn(campaignId);
+    try {
+      await reconcileFn(campaignId);
+    } catch (err: unknown) {
+      const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+      const logger = deps.logger ?? console;
+      logger.error(`[Control] reconcile failed: ${errClass}`);
+    }
   } else if (createdJobs.length > 0) {
     await safelyEnqueueJobs(createdJobs, deps);
   }

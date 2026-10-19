@@ -159,6 +159,10 @@ export interface DraftDeps {
   ai?: AiConfig;
   refreshCampaign?: (campaignId: string, deps?: any) => Promise<any>;
   chunkSize?: number;
+  logger?: {
+    error: (message: string) => void;
+    info?: (message: string) => void;
+  };
 }
 
 /**
@@ -336,7 +340,13 @@ export async function resolveDraft(
 
   if (applied && campaignId) {
     const refreshFn = deps.refreshCampaign ?? refreshCampaign;
-    await refreshFn(campaignId, { db });
+    try {
+      await refreshFn(campaignId, { db });
+    } catch (err: unknown) {
+      const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+      const logger = deps.logger ?? console;
+      logger.error(`[Drafts] refreshCampaign failed: ${errClass}`);
+    }
   }
 
   return {
@@ -477,7 +487,13 @@ export async function bulkResolve(
   }
 
   const refreshFn = deps.refreshCampaign ?? refreshCampaign;
-  await refreshFn(campaignId, { db });
+  try {
+    await refreshFn(campaignId, { db });
+  } catch (err: unknown) {
+    const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+    const logger = deps.logger ?? console;
+    logger.error(`[Drafts] refreshCampaign failed: ${errClass}`);
+  }
 
   return { changed, skippedHardBlocked };
 }

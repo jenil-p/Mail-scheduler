@@ -228,6 +228,41 @@ describe("control.ts - resumeCampaign", () => {
       expect(updated.errorMessage).toBeNull();
       expect(reconcile).toHaveBeenCalledWith("camp-1");
     });
+
+    it("survives reconcile throwing after commit: logs error class and returns normally", async () => {
+      const reconcile = vi.fn(async () => {
+        throw new TypeError("Transient redis error");
+      });
+      const logger = { error: vi.fn(), info: vi.fn() };
+      const { client, campaigns } = createFakeDb({
+        campaigns: [
+          {
+            id: "camp-1",
+            status: "PAUSED",
+            errorMessage: "Paused by the user.",
+            promptTemplateVersion: "personalize.v2",
+            llmModel: "mock-model",
+            approvedPromptVersion: "fingerprint-123",
+          },
+        ],
+      });
+
+      const res = await resumeCampaign("camp-1", {
+        db: client as any,
+        identity: mockIdentity,
+        reconcile,
+        logger,
+      });
+
+      expect(res.ok).toBe(true);
+      expect(res.status).toBe("GENERATING");
+
+      const updated = campaigns.get("camp-1");
+      expect(updated.status).toBe("GENERATING");
+      expect(updated.errorMessage).toBeNull();
+      expect(reconcile).toHaveBeenCalledWith("camp-1");
+      expect(logger.error).toHaveBeenCalledWith("[Control] reconcile failed: TypeError");
+    });
   });
 
   describe("when identity differs", () => {
