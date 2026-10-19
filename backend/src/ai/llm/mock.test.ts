@@ -111,3 +111,27 @@ describe("MockLlmClient", () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(35);
   });
 });
+
+describe("resolveModelName", () => {
+  it("resolves to mock-model for mock provider when model is not set", async () => {
+    const { resolveModelName, createLlmClient, MOCK_MODEL_ID } = await import("./index");
+    const { parseAiConfig } = await import("../../config/ai");
+
+    const ai = parseAiConfig({ LLM_PROVIDER: "mock" });
+    expect(resolveModelName(ai)).toBe(MOCK_MODEL_ID);
+
+    const client = createLlmClient(ai);
+    expect(client.model).toBe(MOCK_MODEL_ID);
+  });
+
+  it("resolves to explicit model when set", async () => {
+    const { resolveModelName, createLlmClient } = await import("./index");
+    const { parseAiConfig } = await import("../../config/ai");
+
+    const ai = parseAiConfig({ LLM_PROVIDER: "mock", LLM_MODEL: "custom-mock" });
+    expect(resolveModelName(ai)).toBe("custom-mock");
+
+    const client = createLlmClient(ai);
+    expect(client.model).toBe("custom-mock");
+  });
+});

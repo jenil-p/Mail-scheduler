@@ -6,6 +6,7 @@ import type { PrismaClient } from "../generated/prisma/client";
 import type { AiConfig } from "../config/ai";
 import { parseAiConfig } from "../config/ai";
 import { MockLlmClient } from "../ai/llm/mock";
+import { createLlmClient } from "../ai/llm";
 import { PROMPT_VERSION } from "../ai/prompts/personalize.v2";
 import type { LlmLimiter } from "../ai/rateLimit/llmLimiter";
 import type { GenerateDeps } from "../queue/generateWorker";
@@ -140,10 +141,12 @@ suite("campaign review flow (integration)", () => {
     recipientsCount?: number;
     aiEnabled?: boolean;
     aiInstruction?: string;
+    allHaveData?: boolean;
   } = {}): Promise<string> {
     const aiEnabled = options.aiEnabled ?? true;
     const aiInstruction = options.aiInstruction ?? "Helpful and professional.";
     const count = options.recipientsCount ?? 5;
+    const allHaveData = options.allHaveData ?? false;
 
     const campaign = await prisma.campaign.create({
       data: {
@@ -164,8 +167,8 @@ suite("campaign review flow (integration)", () => {
     campaignIds.push(campaign.id);
 
     const recipientData = Array.from({ length: count }, (_, i) => {
-      // First 3 recipients have personalization data, remaining may have thin data
-      const hasData = i < 3;
+      // First 3 recipients have personalization data, remaining may have thin data unless allHaveData
+      const hasData = allHaveData || i < 3;
       return {
         campaignId: campaign.id,
         email: `recipient-${i}-${randomUUID()}@example.com`,
@@ -360,7 +363,7 @@ suite("campaign review flow (integration)", () => {
 
   it("status progression: GENERATING with flagged -> EXCEPTION_REVIEW; EXCEPTION_REVIEW without flagged -> SCHEDULED", async () => {
     const ai = aiConfig({ SAMPLE_SIZE: "2" });
-    const campaignId = await createDraftCampaign({ recipientsCount: 3 });
+    const campaignId = await createDraftCampaign({ recipientsCount: 4, allHaveData: true });
 
     await startSampling(campaignId, { db: prisma, ai });
     await resolvePendingDrafts(campaignId, "Sample intro.", ai);
@@ -462,5 +465,57 @@ suite("campaign review flow (integration)", () => {
 
     const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
     expect(campaign.status).toBe("SCHEDULED");
+  });
+
+  it("live identity: provider mock with no LLM_MODEL resolves drafts without pausing campaign", async () => {
+    const ai = parseAiConfig({
+      AI_PERSONALIZATION_ENABLED: "true",
+      LLM_PROVIDER: "mock",
+      // LLM_MODEL deliberately omitted
+      LLM_RATE_LIMIT_PER_MIN: "1000",
+      LLM_RATE_LIMIT_PER_DAY: "1000",
+      LLM_DAILY_RESET_TZ: "UTC",
+      SAMPLE_SIZE: "2",
+    });
+
+    const campaignId = await createDraftCampaign({ recipientsCount: 2, allHaveData: true });
+
+    // startSampling with NO injected identity
+    const samplingResult = await startSampling(campaignId, { db: prisma, ai });
+    expect(samplingResult.ok).toBe(true);
+
+    const client = createLlmClient(ai);
+    const drafts = await prisma.generatedDraft.findMany({
+      where: { campaignId, status: "PENDING" },
+    });
+    expect(drafts).toHaveLength(2);
+
+    for (const draft of drafts) {
+      const res = await processGenerate(
+        processedDeps(client as MockLlmClient, ai),
+        {
+          id: draft.id,
+          data: {
+            draftId: draft.id,
+            campaignId: draft.campaignId,
+            recipientId: draft.recipientId,
+            isSample: draft.isSample,
+          },
+          attemptsMade: 0,
+          opts: { attempts: 3 },
+        }
+      );
+      expect(res.outcome).not.toBe("PAUSED_VERSION_MISMATCH");
+    }
+
+    const updatedCampaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(updatedCampaign.status).not.toBe("PAUSED");
+    expect(updatedCampaign.status).toBe("SAMPLING");
+
+    const resolvedDrafts = await prisma.generatedDraft.findMany({
+      where: { campaignId },
+    });
+    expect(resolvedDrafts).toHaveLength(2);
+    expect(resolvedDrafts.every((d) => d.status === "READY" || d.status === "FLAGGED")).toBe(true);
   });
 });

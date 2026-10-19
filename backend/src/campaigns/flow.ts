@@ -20,11 +20,19 @@ import type { AiConfig } from "../config/ai";
 import { config } from "../config";
 import { draftId, promptFingerprint } from "../ai/identity";
 import { PROMPT_VERSION } from "../ai/prompts/personalize.v2";
+import { resolveModelName } from "../ai/llm";
 import { selectSampleRecipients } from "./sampling";
 import { listRecipients } from "./recipients";
 import { transition, IllegalTransitionError } from "./stateMachine";
 import { getGenerateQueue } from "../queue/generateQueue";
 import { ensureGenerateJob } from "./reconcile";
+
+export function liveLlmIdentity(ai: AiConfig = config.ai): FlowLiveIdentity {
+  return {
+    promptTemplateVersion: PROMPT_VERSION,
+    llmModel: resolveModelName(ai),
+  };
+}
 
 export class InvalidInstructionError extends Error {
   readonly code = "INVALID_INSTRUCTION";
@@ -100,10 +108,8 @@ export async function startSampling(
   deps: FlowDeps = {}
 ): Promise<{ ok: boolean; draftIds: string[] }> {
   const db = deps.db ?? (await import("../db/pool")).prisma;
-  const liveIdentity: FlowLiveIdentity = deps.identity ?? {
-    promptTemplateVersion: PROMPT_VERSION,
-    llmModel: deps.ai?.model ?? config.ai.model ?? config.ai.provider,
-  };
+  const liveIdentity: FlowLiveIdentity =
+    deps.identity ?? liveLlmIdentity(deps.ai ?? config.ai);
   const sampleSize = deps.sampleSize ?? deps.ai?.sampleSize ?? config.ai.sampleSize;
 
   let createdJobs: FlowEnqueueItem[] = [];
@@ -216,10 +222,8 @@ export async function regenerateSamples(
     }
   }
 
-  const liveIdentity: FlowLiveIdentity = deps.identity ?? {
-    promptTemplateVersion: PROMPT_VERSION,
-    llmModel: deps.ai?.model ?? config.ai.model ?? config.ai.provider,
-  };
+  const liveIdentity: FlowLiveIdentity =
+    deps.identity ?? liveLlmIdentity(deps.ai ?? config.ai);
   const sampleSize = deps.sampleSize ?? deps.ai?.sampleSize ?? config.ai.sampleSize;
 
   let createdJobs: FlowEnqueueItem[] = [];

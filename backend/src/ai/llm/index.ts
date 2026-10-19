@@ -15,9 +15,21 @@ import { MockLlmClient } from "./mock";
 /** Model id recorded when the mock provider is used. Part of the fingerprint. */
 export const MOCK_MODEL_ID = "mock-model";
 
-export function createLlmClient(ai: AiConfig): LlmClient {
+/**
+ * Resolve the effective model name for an AI config.
+ * Used by createLlmClient for client.model and by flow.ts for campaign live identity.
+ */
+export function resolveModelName(ai: AiConfig): string {
   if (ai.provider === "gemini") {
-    if (!ai.apiKey || !ai.model) {
+    return ai.model ?? "";
+  }
+  return ai.model ?? MOCK_MODEL_ID;
+}
+
+export function createLlmClient(ai: AiConfig): LlmClient {
+  const model = resolveModelName(ai);
+  if (ai.provider === "gemini") {
+    if (!ai.apiKey || !model) {
       // Config validation already rejects this combination at startup; this is
       // the belt-and-braces version for a caller that built the config by hand.
       throw new Error(
@@ -27,13 +39,13 @@ export function createLlmClient(ai: AiConfig): LlmClient {
 
     return new GeminiClient({
       apiKey: ai.apiKey,
-      model: ai.model,
+      model,
       maxOutputTokens: ai.maxOutputTokens,
       thinkingBudget: ai.thinkingBudget,
     });
   }
 
-  return new MockLlmClient({ model: ai.model ?? MOCK_MODEL_ID });
+  return new MockLlmClient({ model });
 }
 
 export { GeminiClient, MockLlmClient };
