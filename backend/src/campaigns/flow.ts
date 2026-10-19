@@ -70,6 +70,10 @@ export interface FlowDeps {
   sampleSize?: number;
   instructionMaxLength?: number;
   ai?: AiConfig;
+  logger?: {
+    error: (message: string) => void;
+    info?: (message: string) => void;
+  };
 }
 
 export type ApproveSamplesResult =
@@ -96,6 +100,20 @@ async function defaultEnqueue(jobs: FlowEnqueueItem[]): Promise<void> {
         addJob: (name, data, opts) => queue.add(name, data, opts),
       }
     );
+  }
+}
+
+async function safelyEnqueueJobs(
+  jobs: FlowEnqueueItem[],
+  deps: FlowDeps
+): Promise<void> {
+  try {
+    const enqueueFn = deps.enqueue ?? defaultEnqueue;
+    await enqueueFn(jobs);
+  } catch (err: unknown) {
+    const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+    const logger = deps.logger ?? console;
+    logger.error(`[Flow] enqueue failed: ${errClass}`);
   }
 }
 
@@ -186,8 +204,7 @@ export async function startSampling(
   });
 
   // Enqueue jobs AFTER commit.
-  const enqueueFn = deps.enqueue ?? defaultEnqueue;
-  await enqueueFn(createdJobs);
+  await safelyEnqueueJobs(createdJobs, deps);
 
   return { ok: true, draftIds: createdJobs.map((j) => j.draftId) };
 }
@@ -303,8 +320,7 @@ export async function regenerateSamples(
   });
 
   // Enqueue jobs AFTER commit.
-  const enqueueFn = deps.enqueue ?? defaultEnqueue;
-  await enqueueFn(createdJobs);
+  await safelyEnqueueJobs(createdJobs, deps);
 
   return { ok: true, draftIds: createdJobs.map((j) => j.draftId) };
 }
@@ -423,8 +439,7 @@ export async function approveSamples(
   });
 
   // Enqueue jobs AFTER commit.
-  const enqueueFn = deps.enqueue ?? defaultEnqueue;
-  await enqueueFn(createdJobs);
+  await safelyEnqueueJobs(createdJobs, deps);
 
   return { ok: true };
 }

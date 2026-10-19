@@ -223,7 +223,7 @@ describe("flow", () => {
       );
     });
 
-    it("leaves drafts PENDING in database if enqueue throws after commit", async () => {
+    it("leaves drafts PENDING in database and resolves ok if enqueue throws after commit", async () => {
       const db = createFakeDb({
         campaigns: [
           {
@@ -238,15 +238,20 @@ describe("flow", () => {
         ],
       });
 
+      const logger = { error: vi.fn(), info: vi.fn() };
       const deps: FlowDeps = {
         db,
         identity: defaultIdentity,
+        logger,
         enqueue: async () => {
-          throw new Error("Redis connection dropped");
+          throw new TypeError("Redis connection dropped");
         },
       };
 
-      await expect(startSampling("c1", deps)).rejects.toThrow("Redis connection dropped");
+      const result = await startSampling("c1", deps);
+      expect(result.ok).toBe(true);
+      expect(result.draftIds).toHaveLength(1);
+      expect(logger.error).toHaveBeenCalledWith("[Flow] enqueue failed: TypeError");
 
       // State moved to SAMPLING and drafts exist as PENDING
       const campaign = db._state.campaigns.get("c1");
@@ -387,6 +392,47 @@ describe("flow", () => {
       });
 
       await expect(regenerateSamples("c1", {}, { db })).rejects.toThrow(IllegalTransitionError);
+    });
+
+    it("leaves drafts PENDING in database and resolves ok if enqueue throws after commit", async () => {
+      const oldFingerprint = "old-fp";
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            status: "SAMPLE_REVIEW",
+            aiEnabled: true,
+            promptFingerprint: oldFingerprint,
+            templateHash: "thash1",
+          },
+        ],
+        recipients: [
+          { id: "r1", campaignId: "c1", company: "Acme", hasPersonalizationData: true },
+        ],
+        drafts: [
+          { id: "d1", campaignId: "c1", recipientId: "r1", promptVersion: oldFingerprint, isSample: true, status: "READY" },
+        ],
+      });
+
+      const logger = { error: vi.fn(), info: vi.fn() };
+      const deps: FlowDeps = {
+        db,
+        identity: defaultIdentity,
+        logger,
+        enqueue: async () => {
+          throw new RangeError("BullMQ queue error");
+        },
+      };
+
+      const result = await regenerateSamples("c1", {}, deps);
+      expect(result.ok).toBe(true);
+      expect(logger.error).toHaveBeenCalledWith("[Flow] enqueue failed: RangeError");
+
+      const campaign = db._state.campaigns.get("c1");
+      expect(campaign.status).toBe("SAMPLING");
+      expect(db._state.drafts.size).toBe(1);
+      const drafts = Array.from(db._state.drafts.values()) as any[];
+      expect(drafts[0].status).toBe("PENDING");
     });
   });
 
@@ -582,6 +628,58 @@ describe("flow", () => {
         IllegalTransitionError
       );
       expect(db._state.drafts.size).toBe(1);
+    });
+
+    it("leaves drafts PENDING in database and resolves ok if enqueue throws after commit", async () => {
+      const fingerprint = "fp1";
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            status: "SAMPLE_REVIEW",
+            promptFingerprint: fingerprint,
+            llmModel: "mock-model",
+            templateHash: "thash1",
+          },
+        ],
+        recipients: [
+          { id: "r1", campaignId: "c1", hasPersonalizationData: true },
+          { id: "r2", campaignId: "c1", hasPersonalizationData: true },
+        ],
+        drafts: [
+          {
+            id: "d1",
+            campaignId: "c1",
+            recipientId: "r1",
+            promptVersion: fingerprint,
+            isSample: true,
+            status: "READY",
+          },
+        ],
+      });
+
+      const logger = { error: vi.fn(), info: vi.fn() };
+      const result = await approveSamples(
+        "c1",
+        { acknowledgeBudgetWarning: true },
+        {
+          db,
+          logger,
+          enqueue: async () => {
+            throw new Error("Redis write failure");
+          },
+        }
+      );
+
+      expect(result).toEqual({ ok: true });
+      expect(logger.error).toHaveBeenCalledWith("[Flow] enqueue failed: Error");
+
+      const campaign = db._state.campaigns.get("c1");
+      expect(campaign.status).toBe("GENERATING");
+      expect(db._state.drafts.size).toBe(2);
+      const drafts = Array.from(db._state.drafts.values()) as any[];
+      const remainingDraft = drafts.find((d) => d.recipientId === "r2");
+      expect(remainingDraft?.status).toBe("PENDING");
     });
   });
 

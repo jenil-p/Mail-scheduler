@@ -250,16 +250,15 @@ suite("campaign review flow (integration)", () => {
     const ai = aiConfig();
     const campaignId = await createDraftCampaign({ recipientsCount: 4 });
 
-    // Enqueue function fails after commit
-    await expect(
-      startSampling(campaignId, {
-        db: prisma,
-        ai,
-        enqueue: async () => {
-          throw new Error("Simulated enqueue failure");
-        },
-      })
-    ).rejects.toThrow("Simulated enqueue failure");
+    // Enqueue function fails after commit, but function resolves ok
+    const result = await startSampling(campaignId, {
+      db: prisma,
+      ai,
+      enqueue: async () => {
+        throw new Error("Simulated enqueue failure");
+      },
+    });
+    expect(result.ok).toBe(true);
 
     // Campaign is in SAMPLING with PENDING drafts in DB
     const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
