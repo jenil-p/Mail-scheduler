@@ -10,6 +10,7 @@ import {
   type FlowEnqueueItem,
 } from "./flow";
 import { IllegalTransitionError } from "./stateMachine";
+import { createDailyUsageGetter } from "./budget";
 import type { CampaignStatus } from "../generated/prisma/client";
 
 // In-memory Prisma fake for unit testing flow transactions and preconditions
@@ -439,6 +440,69 @@ describe("flow", () => {
       expect(campaign.status).toBe("SAMPLE_REVIEW");
       expect(campaign.approvedPromptVersion).toBeUndefined();
       expect(db._state.drafts.size).toBe(1);
+    });
+
+    it("throws Error when daily limit is configured without dailyUsage or getDailyUsage", async () => {
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            status: "SAMPLE_REVIEW",
+            promptFingerprint: "fp1",
+            llmModel: "mock-model",
+            templateHash: "thash1",
+          },
+        ],
+        recipients: [{ id: "r1", campaignId: "c1", hasPersonalizationData: true }],
+      });
+
+      await expect(
+        approveSamples("c1", {}, { db, dailyLimit: 100 })
+      ).rejects.toThrow("approveSamples needs a daily usage source when a daily limit is configured");
+    });
+
+    it("queries daily usage via createDailyUsageGetter when daily limit is configured", async () => {
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            status: "SAMPLE_REVIEW",
+            promptFingerprint: "fp1",
+            llmModel: "mock-model",
+            templateHash: "thash1",
+          },
+        ],
+        recipients: [
+          { id: "r1", campaignId: "c1", hasPersonalizationData: true },
+          { id: "r2", campaignId: "c1", hasPersonalizationData: true },
+        ],
+        drafts: [
+          {
+            id: "d1",
+            campaignId: "c1",
+            recipientId: "r1",
+            promptVersion: "fp1",
+            isSample: true,
+            status: "READY",
+          },
+        ],
+      });
+
+      const limiter = {
+        dailyUsage: vi.fn().mockResolvedValue(99),
+      };
+      const getDailyUsage = createDailyUsageGetter(limiter, "mock");
+
+      // needed = 1 (r2). dailyLimit = 100, usage = 99 -> remaining = 1.
+      // needed (1) <= remaining (1) -> passes budget check without warning.
+      const result = await approveSamples(
+        "c1",
+        { acknowledgeBudgetWarning: false },
+        { db, dailyLimit: 100, getDailyUsage, enqueue: async () => {} }
+      );
+
+      expect(result).toEqual({ ok: true });
+      expect(limiter.dailyUsage).toHaveBeenCalledWith("mock", "mock-model");
     });
 
     it("fans out drafts and sets GENERATING when budget check passes or is acknowledged", async () => {

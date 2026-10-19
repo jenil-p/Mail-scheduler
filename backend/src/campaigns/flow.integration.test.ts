@@ -21,6 +21,7 @@ import {
 } from "./flow";
 import { IllegalTransitionError } from "./stateMachine";
 import { executeCampaignTickRun } from "./tick";
+import { createDailyUsageGetter } from "./budget";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const testRedisHost = process.env.TEST_REDIS_HOST;
@@ -368,7 +369,11 @@ suite("campaign review flow (integration)", () => {
     await startSampling(campaignId, { db: prisma, ai });
     await resolvePendingDrafts(campaignId, "Sample intro.", ai);
     await refreshCampaign(campaignId, { db: prisma, ai });
-    await approveSamples(campaignId, {}, { db: prisma, ai });
+    await approveSamples(
+      campaignId,
+      {},
+      { db: prisma, ai, getDailyUsage: createDailyUsageGetter(mkLimiter(ai), ai.provider) }
+    );
 
     // Resolve drafts: make one draft FLAGGED by returning a banned phrase
     const pendingDrafts = await prisma.generatedDraft.findMany({
@@ -451,7 +456,11 @@ suite("campaign review flow (integration)", () => {
     await startSampling(campaignId, { db: prisma, ai });
     await resolvePendingDrafts(campaignId, "Intro.", ai);
     await refreshCampaign(campaignId, { db: prisma, ai });
-    await approveSamples(campaignId, {}, { db: prisma, ai });
+    await approveSamples(
+      campaignId,
+      {},
+      { db: prisma, ai, getDailyUsage: createDailyUsageGetter(mkLimiter(ai), ai.provider) }
+    );
     await resolvePendingDrafts(campaignId, "Intro.", ai);
 
     // Campaign is in GENERATING with all drafts resolved to READY (none flagged)

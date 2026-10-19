@@ -351,9 +351,13 @@ export async function approveSamples(
 
   const dailyLimit = deps.dailyLimit ?? deps.ai?.dailyRateLimit ?? config.ai.dailyRateLimit;
   if (dailyLimit !== undefined && dailyLimit !== null) {
+    if (deps.dailyUsage === undefined && !deps.getDailyUsage) {
+      throw new Error(
+        "approveSamples needs a daily usage source when a daily limit is configured"
+      );
+    }
     const dailyUsage =
-      deps.dailyUsage ??
-      (deps.getDailyUsage ? await deps.getDailyUsage(campaign.llmModel ?? "") : 0);
+      deps.dailyUsage ?? (await deps.getDailyUsage!(campaign.llmModel ?? ""));
     const remaining = dailyLimit - dailyUsage;
 
     if (needed > remaining && !options.acknowledgeBudgetWarning) {
