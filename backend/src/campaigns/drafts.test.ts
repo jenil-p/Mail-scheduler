@@ -133,6 +133,12 @@ function createFakeDb(initialState: {
         }
         return list.length;
       }),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: any }) => {
+        const d = drafts.get(where.id);
+        if (!d) throw new Error("Not found");
+        Object.assign(d, data);
+        return { ...d };
+      }),
       updateMany: vi.fn(async ({ where, data }: { where: any; data: any }) => {
         let count = 0;
         for (const d of drafts.values()) {
@@ -478,7 +484,13 @@ describe("drafts.ts - resolveDraft", () => {
       drafts: [blockedDraft],
     });
 
-    const plainRes = await resolveDraft("draft-hard-blocked", { type: "use_plain" }, { db: client1 as any });
+    const refreshFn = vi.fn(async () => ({ refreshed: false }));
+
+    const plainRes = await resolveDraft(
+      "draft-hard-blocked",
+      { type: "use_plain" },
+      { db: client1 as any, refreshCampaign: refreshFn }
+    );
     expect(plainRes.applied).toBe(true);
     expect(plainRes.status).toBe("FALLBACK");
     expect(draftMap1.get("draft-hard-blocked").status).toBe("FALLBACK");
@@ -493,7 +505,7 @@ describe("drafts.ts - resolveDraft", () => {
     const editRes = await resolveDraft(
       "draft-hard-blocked",
       { type: "edit", aiIntro: "Clean valid intro about Acme" },
-      { db: client2 as any }
+      { db: client2 as any, refreshCampaign: refreshFn }
     );
     expect(editRes.applied).toBe(true);
     expect(editRes.status).toBe("APPROVED");

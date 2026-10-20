@@ -102,6 +102,8 @@ suite("generate worker (integration)", () => {
       port: Number(testRedisPort),
       maxRetriesPerRequest: null,
     });
+    redis.on("error", () => {});
+    redisConnection.on("error", () => {});
 
     queue = queueModule.getGenerateQueue();
     await queue.obliterate({ force: true }).catch(() => undefined);
@@ -110,9 +112,9 @@ suite("generate worker (integration)", () => {
   afterAll(async () => {
     for (const worker of workers) await worker.close().catch(() => undefined);
     await queue?.obliterate({ force: true }).catch(() => undefined);
-    await queue?.close();
-    await redis?.quit();
-    await redisConnection?.quit();
+    await queue?.close().catch(() => undefined);
+    await redis?.quit().catch(() => undefined);
+    await redisConnection?.quit().catch(() => undefined);
 
     if (campaignIds.length > 0) {
       await prisma.campaign.deleteMany({ where: { id: { in: campaignIds } } });

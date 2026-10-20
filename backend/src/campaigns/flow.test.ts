@@ -6,10 +6,12 @@ import {
   refreshCampaign,
   regenerateSamples,
   scheduleCampaign,
+  startPlainCampaign,
   startSampling,
   type FlowDeps,
   type FlowEnqueueItem,
 } from "./flow";
+import { reconcileSends } from "./reconcile";
 import { IllegalTransitionError } from "./stateMachine";
 import { createDailyUsageGetter } from "./budget";
 import type { CampaignStatus } from "../generated/prisma/client";
@@ -19,6 +21,7 @@ function createFakeDb(initialState: {
   campaigns?: any[];
   recipients?: any[];
   drafts?: any[];
+  emailJobs?: any[];
 }) {
   const campaigns = new Map<string, any>(
     (initialState.campaigns ?? []).map((c) => [c.id, { ...c }])
@@ -28,6 +31,9 @@ function createFakeDb(initialState: {
   );
   const drafts = new Map<string, any>(
     (initialState.drafts ?? []).map((d) => [d.id, { ...d }])
+  );
+  const emailJobs = new Map<string, any>(
+    (initialState.emailJobs ?? []).map((j) => [j.id, { ...j }])
   );
 
   const client = {
@@ -65,7 +71,7 @@ function createFakeDb(initialState: {
       }),
     },
     generatedDraft: {
-      findMany: vi.fn(async ({ where }: { where: any }) => {
+      findMany: vi.fn(async ({ where, include }: { where: any; include?: any }) => {
         let list = Array.from(drafts.values());
         if (where.campaignId) {
           list = list.filter((d) => d.campaignId === where.campaignId);
@@ -76,7 +82,44 @@ function createFakeDb(initialState: {
         if (where.isSample !== undefined) {
           list = list.filter((d) => d.isSample === where.isSample);
         }
-        return list.map((d) => ({ ...d }));
+        if (where.emailJobId === null) {
+          list = list.filter((d) => !d.emailJobId);
+        }
+        if (where.status) {
+          if (typeof where.status === "string") {
+            list = list.filter((d) => d.status === where.status);
+          } else if (where.status.in) {
+            list = list.filter((d) => where.status.in.includes(d.status));
+          }
+        }
+        return list.map((d) => {
+          const res = { ...d };
+          if (include?.recipient) {
+            res.recipient = recipients.get(d.recipientId) ?? {
+              id: d.recipientId ?? "r1",
+              email: `${d.recipientId ?? "r1"}@example.com`,
+            };
+          }
+          return res;
+        });
+      }),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: any }) => {
+        const existing = drafts.get(where.id);
+        if (!existing) throw new Error(`Draft ${where.id} not found`);
+        let emailJob = existing.emailJob;
+        if (data.emailJob?.create) {
+          const id = `job-${where.id}`;
+          emailJob = { id, ...data.emailJob.create };
+          emailJobs.set(id, emailJob);
+        }
+        const updated = {
+          ...existing,
+          ...data,
+          emailJobId: emailJob ? emailJob.id : existing.emailJobId,
+          emailJob,
+        };
+        drafts.set(where.id, updated);
+        return updated;
       }),
       count: vi.fn(async ({ where }: { where: any }) => {
         let list = Array.from(drafts.values());
@@ -119,10 +162,35 @@ function createFakeDb(initialState: {
         return { count };
       }),
     },
+    emailJob: {
+      findMany: vi.fn(async ({ where }: { where?: any }) => {
+        let list = Array.from(emailJobs.values());
+        if (where?.status) {
+          if (typeof where.status === "string") {
+            list = list.filter((j) => j.status === where.status);
+          } else if (where.status.in) {
+            list = list.filter((j) => where.status.in.includes(j.status));
+          }
+        }
+        if (where?.generatedDraft?.campaignId) {
+          const cId = where.generatedDraft.campaignId;
+          const targetIds = cId.in ? cId.in : [cId];
+          list = list.filter((j) => {
+            const draft = Array.from(drafts.values()).find((d) => d.emailJobId === j.id);
+            return draft && targetIds.includes(draft.campaignId);
+          });
+        }
+        return list.map((j) => ({ ...j }));
+      }),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const j = emailJobs.get(where.id);
+        return j ? { ...j } : null;
+      }),
+    },
     $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => {
       return cb(client);
     }),
-    _state: { campaigns, recipients, drafts },
+    _state: { campaigns, recipients, drafts, emailJobs },
   };
 
   return client as any;
@@ -885,6 +953,325 @@ describe("flow", () => {
       const successCount = [res1, res2].filter((r) => r.refreshed && r.to === "SCHEDULED").length;
       expect(successCount).toBe(1);
       expect(db._state.campaigns.get("c1").status).toBe("SCHEDULED");
+    });
+  });
+
+  describe("scheduleCampaign", () => {
+    it("only READY/APPROVED/FALLBACK drafts get EmailJobs; HELD and FLAGGED do not; drafts become QUEUED with emailJobId set", async () => {
+      const fingerprint = "fp1";
+      const scheduledAt = new Date("2026-11-01T10:00:00Z");
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            userId: "owner@example.com",
+            status: "GENERATING",
+            promptFingerprint: fingerprint,
+            scheduledAt,
+          },
+        ],
+        recipients: [
+          { id: "r1", campaignId: "c1", email: "r1@example.com" },
+          { id: "r2", campaignId: "c1", email: "r2@example.com" },
+          { id: "r3", campaignId: "c1", email: "r3@example.com" },
+          { id: "r4", campaignId: "c1", email: "r4@example.com" },
+          { id: "r5", campaignId: "c1", email: "r5@example.com" },
+        ],
+        drafts: [
+          { id: "d1", campaignId: "c1", recipientId: "r1", promptVersion: fingerprint, status: "READY", subject: "S1", body: "B1" },
+          { id: "d2", campaignId: "c1", recipientId: "r2", promptVersion: fingerprint, status: "APPROVED", subject: "S2", body: "B2" },
+          { id: "d3", campaignId: "c1", recipientId: "r3", promptVersion: fingerprint, status: "FALLBACK", subject: "S3", body: "B3" },
+          { id: "d4", campaignId: "c1", recipientId: "r4", promptVersion: fingerprint, status: "HELD", subject: "S4", body: "B4" },
+          { id: "d5", campaignId: "c1", recipientId: "r5", promptVersion: fingerprint, status: "FLAGGED", subject: "S5", body: "B5" },
+        ],
+      });
+
+      const sendJobs: any[] = [];
+      const addSendJob = vi.fn(async (job, opts) => {
+        sendJobs.push({ job, opts });
+      });
+
+      const moved = await scheduleCampaign("c1", "GENERATING", { db, addSendJob });
+      expect(moved).toBe(true);
+
+      // Verify drafts status and emailJobId
+      const d1 = db._state.drafts.get("d1");
+      const d2 = db._state.drafts.get("d2");
+      const d3 = db._state.drafts.get("d3");
+      const d4 = db._state.drafts.get("d4");
+      const d5 = db._state.drafts.get("d5");
+
+      expect(d1.status).toBe("QUEUED");
+      expect(d1.emailJobId).toBeDefined();
+      expect(d2.status).toBe("QUEUED");
+      expect(d2.emailJobId).toBeDefined();
+      expect(d3.status).toBe("QUEUED");
+      expect(d3.emailJobId).toBeDefined();
+
+      // HELD and FLAGGED do not get EmailJobs and stay in their status
+      expect(d4.status).toBe("HELD");
+      expect(d4.emailJobId).toBeUndefined();
+      expect(d5.status).toBe("FLAGGED");
+      expect(d5.emailJobId).toBeUndefined();
+
+      // Verify EmailJob content equals draft's subject and body
+      const j1 = db._state.emailJobs.get(d1.emailJobId);
+      expect(j1).toMatchObject({
+        userId: "owner@example.com",
+        recipientEmail: "r1@example.com",
+        subject: "S1",
+        body: "B1",
+        senderEmail: "Sendly Scheduler <scheduler@sendly.local>",
+        status: "pending",
+      });
+
+      const j2 = db._state.emailJobs.get(d2.emailJobId);
+      expect(j2.subject).toBe("S2");
+      expect(j2.body).toBe("B2");
+
+      const j3 = db._state.emailJobs.get(d3.emailJobId);
+      expect(j3.subject).toBe("S3");
+      expect(j3.body).toBe("B3");
+
+      // Verify send queue additions
+      expect(sendJobs).toHaveLength(3);
+    });
+
+    it("a second call creates nothing", async () => {
+      const fingerprint = "fp1";
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            userId: "owner@example.com",
+            status: "GENERATING",
+            promptFingerprint: fingerprint,
+            scheduledAt: new Date(),
+          },
+        ],
+        recipients: [{ id: "r1", campaignId: "c1", email: "r1@example.com" }],
+        drafts: [
+          { id: "d1", campaignId: "c1", recipientId: "r1", promptVersion: fingerprint, status: "READY", subject: "S", body: "B" },
+        ],
+      });
+
+      const addSendJob = vi.fn();
+      const first = await scheduleCampaign("c1", "GENERATING", { db, addSendJob });
+      expect(first).toBe(true);
+      expect(addSendJob).toHaveBeenCalledTimes(1);
+
+      // Second call when campaign is already SCHEDULED
+      const second = await scheduleCampaign("c1", "GENERATING", { db, addSendJob });
+      expect(second).toBe(false);
+      expect(addSendJob).toHaveBeenCalledTimes(1);
+    });
+
+    it("two concurrent scheduleCampaign calls create each EmailJob once", async () => {
+      const fingerprint = "fp1";
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            userId: "owner@example.com",
+            status: "GENERATING",
+            promptFingerprint: fingerprint,
+            scheduledAt: new Date(),
+          },
+        ],
+        recipients: [{ id: "r1", campaignId: "c1", email: "r1@example.com" }],
+        drafts: [
+          { id: "d1", campaignId: "c1", recipientId: "r1", promptVersion: fingerprint, status: "READY", subject: "S", body: "B" },
+        ],
+      });
+
+      const addSendJob = vi.fn();
+      const [r1, r2] = await Promise.all([
+        scheduleCampaign("c1", "GENERATING", { db, addSendJob }),
+        scheduleCampaign("c1", "GENERATING", { db, addSendJob }),
+      ]);
+
+      const successCount = [r1, r2].filter(Boolean).length;
+      expect(successCount).toBe(1);
+      expect(addSendJob).toHaveBeenCalledTimes(1);
+      expect(db._state.emailJobs.size).toBe(1);
+    });
+
+    it("a failing enqueue leaves pending EmailJob rows and one reconcileSends run adds the jobs", async () => {
+      const fingerprint = "fp1";
+      const scheduledAt = new Date(Date.now() + 60000);
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            userId: "owner@example.com",
+            status: "GENERATING",
+            promptFingerprint: fingerprint,
+            scheduledAt,
+          },
+        ],
+        recipients: [{ id: "r1", campaignId: "c1", email: "r1@example.com" }],
+        drafts: [
+          { id: "d1", campaignId: "c1", recipientId: "r1", promptVersion: fingerprint, status: "READY", subject: "S", body: "B" },
+        ],
+      });
+
+      // Enqueue fails during scheduleCampaign
+      const failingAddSendJob = vi.fn().mockRejectedValue(new Error("Redis connection refused"));
+      const logger = { error: vi.fn(), info: vi.fn() };
+
+      const moved = await scheduleCampaign("c1", "GENERATING", {
+        db,
+        addSendJob: failingAddSendJob,
+        logger,
+      });
+
+      expect(moved).toBe(true);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("send enqueue failed: Error"));
+
+      // The EmailJob row exists and is pending
+      const draft = db._state.drafts.get("d1");
+      expect(draft.status).toBe("QUEUED");
+      const emailJob = db._state.emailJobs.get(draft.emailJobId);
+      expect(emailJob).toBeDefined();
+      expect(emailJob.status).toBe("pending");
+
+      // Now run reconcileSends
+      const enqueuedReconciledJobs: any[] = [];
+      const reconcileAddJob = vi.fn(async (name, data, opts) => {
+        enqueuedReconciledJobs.push({ name, data, opts });
+      });
+
+      const outcome = await reconcileSends("c1", {
+        db,
+        getJob: vi.fn().mockResolvedValue(null), // Job missing in queue
+        addJob: reconcileAddJob,
+      });
+
+      expect(outcome.reconciledCount).toBe(1);
+      expect(outcome.jobIds).toContain(emailJob.id);
+      expect(enqueuedReconciledJobs).toHaveLength(1);
+      expect(enqueuedReconciledJobs[0].data.jobId).toBe(emailJob.id);
+    });
+  });
+
+  describe("startPlainCampaign", () => {
+    it("executes end to end from DRAFT with aiEnabled false", async () => {
+      const scheduledAt = new Date("2026-12-01T12:00:00Z");
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c_plain",
+            userId: "plain_owner@example.com",
+            status: "DRAFT",
+            aiEnabled: false,
+            subjectTemplate: "Hi {{first_name}}",
+            bodyTemplate: "Welcome to {{company}}!\n\n{{unsubscribe_link}}",
+            templateHash: "plain_hash",
+            linkUrl: "https://example.com",
+            unsubscribeUrl: "https://example.com/unsub",
+            scheduledAt,
+          },
+        ],
+        recipients: [
+          {
+            id: "r1",
+            campaignId: "c_plain",
+            email: "alice@example.com",
+            firstName: "Alice",
+            company: "Acme",
+          },
+          {
+            id: "r2",
+            campaignId: "c_plain",
+            email: "bob@example.com",
+            firstName: "Bob",
+            company: "Beta",
+          },
+        ],
+      });
+
+      const sendJobs: any[] = [];
+      const addSendJob = vi.fn(async (job, opts) => {
+        sendJobs.push({ job, opts });
+      });
+
+      const result = await startPlainCampaign("c_plain", { db, addSendJob });
+      expect(result.ok).toBe(true);
+      expect(result.createdJobsCount).toBe(2);
+
+      const campaign = db._state.campaigns.get("c_plain");
+      expect(campaign.status).toBe("SCHEDULED");
+      expect(campaign.promptFingerprint).toBe("none");
+
+      // Verify drafts
+      const allDrafts = Array.from(db._state.drafts.values()) as any[];
+      expect(allDrafts).toHaveLength(2);
+      for (const d of allDrafts) {
+        expect(d.status).toBe("QUEUED");
+        expect(d.fallbackReason).toBe("AI_DISABLED");
+        expect(d.promptVersion).toBe("none");
+        expect(d.emailJobId).toBeDefined();
+      }
+
+      // Verify rendered subject and body on the drafts
+      const draftAlice = allDrafts.find((d) => d.recipientId === "r1");
+      expect(draftAlice.subject).toBe("Hi Alice");
+      expect(draftAlice.body).toContain("Welcome to Acme!");
+      expect(draftAlice.body).toContain('<a href="https://example.com/unsub">https://example.com/unsub</a>');
+
+      // Verify EmailJobs
+      expect(db._state.emailJobs.size).toBe(2);
+      expect(sendJobs).toHaveLength(2);
+    });
+
+    it("throws EmptyCampaignError when campaign has zero recipients", async () => {
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c_empty",
+            userId: "owner@example.com",
+            status: "DRAFT",
+            aiEnabled: false,
+            scheduledAt: new Date(),
+          },
+        ],
+        recipients: [],
+      });
+
+      await expect(startPlainCampaign("c_empty", { db })).rejects.toThrow(EmptyCampaignError);
+      expect(db._state.campaigns.get("c_empty").status).toBe("DRAFT");
+    });
+
+    it("rejects when aiEnabled is true", async () => {
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c_ai",
+            status: "DRAFT",
+            aiEnabled: true,
+            scheduledAt: new Date(),
+          },
+        ],
+        recipients: [{ id: "r1", campaignId: "c_ai" }],
+      });
+
+      await expect(startPlainCampaign("c_ai", { db })).rejects.toThrowError(/AI personalization enabled/);
+    });
+
+    it("rejects when campaign is not in DRAFT", async () => {
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c_paused",
+            status: "PAUSED",
+            aiEnabled: false,
+            scheduledAt: new Date(),
+          },
+        ],
+        recipients: [{ id: "r1", campaignId: "c_paused" }],
+      });
+
+      await expect(startPlainCampaign("c_paused", { db })).rejects.toThrow(IllegalTransitionError);
     });
   });
 });

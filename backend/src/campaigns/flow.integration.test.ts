@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Queue, Worker } from "bullmq";
 import type Redis from "ioredis";
@@ -13,12 +13,16 @@ import type { GenerateDeps } from "../queue/generateWorker";
 import type { GenerateJobData } from "../queue/generateJob";
 import {
   approveSamples,
+  EmptyCampaignError,
   InvalidInstructionError,
   refreshCampaign,
   regenerateSamples,
   scheduleCampaign,
+  startPlainCampaign,
   startSampling,
 } from "./flow";
+import { reconcileSends } from "./reconcile";
+import { emailQueue } from "../queue/queue";
 import { IllegalTransitionError } from "./stateMachine";
 import { executeCampaignTickRun } from "./tick";
 import { createDailyUsageGetter } from "./budget";
@@ -104,6 +108,11 @@ suite("campaign review flow (integration)", () => {
     await redisConnection?.quit();
 
     if (campaignIds.length > 0) {
+      await prisma.emailJob
+        .deleteMany({
+          where: { generatedDraft: { campaignId: { in: campaignIds } } },
+        })
+        .catch(() => undefined);
       await prisma.campaign.deleteMany({ where: { id: { in: campaignIds } } });
     }
     await prisma.$disconnect();
@@ -525,5 +534,295 @@ suite("campaign review flow (integration)", () => {
     });
     expect(resolvedDrafts).toHaveLength(2);
     expect(resolvedDrafts.every((d) => d.status === "READY" || d.status === "FLAGGED")).toBe(true);
+  });
+
+  describe("scheduleCampaign (Phase 6a integration)", () => {
+    it("only READY/APPROVED/FALLBACK drafts get EmailJobs; HELD and FLAGGED do not; drafts become QUEUED with emailJobId set; second call creates nothing", async () => {
+      const ai = aiConfig({ SAMPLE_SIZE: "5" });
+      const campaignId = await createDraftCampaign({ recipientsCount: 5, allHaveData: true });
+
+      await startSampling(campaignId, { db: prisma, ai });
+      const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+      const drafts = await prisma.generatedDraft.findMany({
+        where: { campaignId },
+        include: { recipient: true },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(drafts).toHaveLength(5);
+
+      // d0: READY, d1: APPROVED, d2: FALLBACK, d3: HELD, d4: FLAGGED
+      await prisma.generatedDraft.update({
+        where: { id: drafts[0].id },
+        data: { status: "READY", subject: "Subject 0", body: "Body 0" },
+      });
+      await prisma.generatedDraft.update({
+        where: { id: drafts[1].id },
+        data: { status: "APPROVED", subject: "Subject 1", body: "Body 1" },
+      });
+      await prisma.generatedDraft.update({
+        where: { id: drafts[2].id },
+        data: { status: "FALLBACK", fallbackReason: "USER_PLAIN", subject: "Subject 2", body: "Body 2" },
+      });
+      await prisma.generatedDraft.update({
+        where: { id: drafts[3].id },
+        data: { status: "HELD", subject: "Subject 3", body: "Body 3" },
+      });
+      await prisma.generatedDraft.update({
+        where: { id: drafts[4].id },
+        data: { status: "FLAGGED", subject: "Subject 4", body: "Body 4" },
+      });
+
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "GENERATING" },
+      });
+
+      const moved = await scheduleCampaign(campaignId, "GENERATING", { db: prisma, ai });
+      expect(moved).toBe(true);
+
+      const updatedCampaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+      expect(updatedCampaign.status).toBe("SCHEDULED");
+
+      const updatedDrafts = await prisma.generatedDraft.findMany({
+        where: { campaignId },
+        include: { emailJob: true, recipient: true },
+      });
+
+      const d0 = updatedDrafts.find((d) => d.id === drafts[0].id)!;
+      const d1 = updatedDrafts.find((d) => d.id === drafts[1].id)!;
+      const d2 = updatedDrafts.find((d) => d.id === drafts[2].id)!;
+      const d3 = updatedDrafts.find((d) => d.id === drafts[3].id)!;
+      const d4 = updatedDrafts.find((d) => d.id === drafts[4].id)!;
+
+      // d0 (READY), d1 (APPROVED), d2 (FALLBACK) -> QUEUED with EmailJob created
+      expect(d0.status).toBe("QUEUED");
+      expect(d0.emailJobId).toBeTruthy();
+      expect(d0.emailJob).toMatchObject({
+        userId: campaign.userId,
+        recipientEmail: drafts[0].recipient.email,
+        subject: "Subject 0",
+        body: "Body 0",
+        senderEmail: "Sendly Scheduler <scheduler@sendly.local>",
+        status: "pending",
+      });
+
+      expect(d1.status).toBe("QUEUED");
+      expect(d1.emailJobId).toBeTruthy();
+      expect(d1.emailJob?.subject).toBe("Subject 1");
+      expect(d1.emailJob?.body).toBe("Body 1");
+
+      expect(d2.status).toBe("QUEUED");
+      expect(d2.emailJobId).toBeTruthy();
+      expect(d2.emailJob?.subject).toBe("Subject 2");
+      expect(d2.emailJob?.body).toBe("Body 2");
+
+      // d3 (HELD) and d4 (FLAGGED) do not get EmailJobs
+      expect(d3.status).toBe("HELD");
+      expect(d3.emailJobId).toBeNull();
+
+      expect(d4.status).toBe("FLAGGED");
+      expect(d4.emailJobId).toBeNull();
+
+      // Second call creates nothing and returns false
+      const secondCall = await scheduleCampaign(campaignId, "GENERATING", { db: prisma, ai });
+      expect(secondCall).toBe(false);
+
+      const jobCount = await prisma.emailJob.count({
+        where: { generatedDraft: { campaignId } },
+      });
+      expect(jobCount).toBe(3);
+    });
+
+    it("two concurrent scheduleCampaign calls create each EmailJob once", async () => {
+      const ai = aiConfig({ SAMPLE_SIZE: "2" });
+      const campaignId = await createDraftCampaign({ recipientsCount: 2, allHaveData: true });
+
+      await startSampling(campaignId, { db: prisma, ai });
+      const drafts = await prisma.generatedDraft.findMany({ where: { campaignId } });
+      for (const d of drafts) {
+        await prisma.generatedDraft.update({
+          where: { id: d.id },
+          data: { status: "READY", subject: "Sub", body: "Body" },
+        });
+      }
+
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "GENERATING" },
+      });
+
+      const [res1, res2] = await Promise.all([
+        scheduleCampaign(campaignId, "GENERATING", { db: prisma, ai }),
+        scheduleCampaign(campaignId, "GENERATING", { db: prisma, ai }),
+      ]);
+
+      const successCount = [res1, res2].filter(Boolean).length;
+      expect(successCount).toBe(1);
+
+      const jobs = await prisma.emailJob.findMany({
+        where: { generatedDraft: { campaignId } },
+      });
+      expect(jobs).toHaveLength(2);
+    });
+
+    it("a failing enqueue leaves pending EmailJob rows and one reconcileSends run adds the jobs", async () => {
+      const ai = aiConfig({ SAMPLE_SIZE: "1" });
+      const campaignId = await createDraftCampaign({ recipientsCount: 1, allHaveData: true });
+
+      await startSampling(campaignId, { db: prisma, ai });
+      const [draft] = await prisma.generatedDraft.findMany({ where: { campaignId } });
+      await prisma.generatedDraft.update({
+        where: { id: draft.id },
+        data: { status: "READY", subject: "Fail Enqueue Sub", body: "Fail Enqueue Body" },
+      });
+
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "GENERATING" },
+      });
+
+      const failingAddSendJob = vi.fn().mockRejectedValue(new Error("Queue error"));
+      const logger = { error: vi.fn(), info: vi.fn() };
+
+      const moved = await scheduleCampaign(campaignId, "GENERATING", {
+        db: prisma,
+        ai,
+        addSendJob: failingAddSendJob,
+        logger,
+      });
+
+      expect(moved).toBe(true);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("send enqueue failed: Error"));
+
+      const [updatedDraft] = await prisma.generatedDraft.findMany({
+        where: { campaignId },
+        include: { emailJob: true },
+      });
+      expect(updatedDraft.status).toBe("QUEUED");
+      expect(updatedDraft.emailJob).toBeDefined();
+      expect(updatedDraft.emailJob?.status).toBe("pending");
+
+      // Verify that reconcileSends finds the pending row and adds the send job to the real queue
+      const reconcileResult = await reconcileSends(campaignId, { db: prisma });
+      expect(reconcileResult.reconciledCount).toBe(1);
+      expect(reconcileResult.jobIds).toContain(updatedDraft.emailJob!.id);
+
+      const bullJob = await emailQueue.getJob(updatedDraft.emailJob!.id);
+      expect(bullJob).toBeDefined();
+      expect(bullJob?.data.jobId).toBe(updatedDraft.emailJob!.id);
+    });
+  });
+
+  describe("startPlainCampaign (Phase 6a integration)", () => {
+    it("startPlainCampaign end to end with aiEnabled false", async () => {
+      const ai = aiConfig();
+      const campaignId = await createDraftCampaign({ recipientsCount: 2, aiEnabled: false });
+
+      const res = await startPlainCampaign(campaignId, { db: prisma, ai });
+      expect(res.ok).toBe(true);
+      expect(res.createdJobsCount).toBe(2);
+
+      const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+      expect(campaign.status).toBe("SCHEDULED");
+      expect(campaign.promptFingerprint).toBe("none");
+
+      const drafts = await prisma.generatedDraft.findMany({
+        where: { campaignId },
+        include: { emailJob: true, recipient: true },
+      });
+
+      expect(drafts).toHaveLength(2);
+      for (const d of drafts) {
+        expect(d.status).toBe("QUEUED");
+        expect(d.fallbackReason).toBe("AI_DISABLED");
+        expect(d.promptVersion).toBe("none");
+        expect(d.isSample).toBe(false);
+        expect(d.emailJobId).toBeTruthy();
+        expect(d.emailJob?.status).toBe("pending");
+        expect(d.emailJob?.senderEmail).toBe("Sendly Scheduler <scheduler@sendly.local>");
+        expect(d.emailJob?.recipientEmail).toBe(d.recipient.email);
+        expect(d.emailJob?.body).not.toContain("{{ai_intro}}");
+        expect(d.emailJob?.body).toContain("We hope to see you there!");
+
+        // Check send queue job in Redis
+        const queueJob = await emailQueue.getJob(d.emailJobId!);
+        expect(queueJob).toBeDefined();
+        expect(queueJob?.data.jobId).toBe(d.emailJobId);
+      }
+    });
+
+    it("throws EmptyCampaignError when campaign has zero recipients", async () => {
+      const ai = aiConfig();
+      const campaignId = await createDraftCampaign({ recipientsCount: 0, aiEnabled: false });
+
+      await expect(startPlainCampaign(campaignId, { db: prisma, ai })).rejects.toThrow(
+        EmptyCampaignError
+      );
+    });
+  });
+
+  describe("reconcileSends (Phase 6a integration)", () => {
+    it("reconcileSends ignores rate_limited, sent and failed rows", async () => {
+      const ai = aiConfig({ SAMPLE_SIZE: "4" });
+      const campaignId = await createDraftCampaign({ recipientsCount: 4, allHaveData: true });
+
+      await startSampling(campaignId, { db: prisma, ai });
+      const drafts = await prisma.generatedDraft.findMany({
+        where: { campaignId },
+        include: { recipient: true },
+      });
+
+      for (const d of drafts) {
+        await prisma.generatedDraft.update({
+          where: { id: d.id },
+          data: { status: "READY", subject: "S", body: "B" },
+        });
+      }
+
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "GENERATING" },
+      });
+
+      await scheduleCampaign(campaignId, "GENERATING", { db: prisma, ai });
+
+      const emailJobs = await prisma.emailJob.findMany({
+        where: { generatedDraft: { campaignId } },
+      });
+      expect(emailJobs).toHaveLength(4);
+
+      // Set different EmailJob statuses
+      // j0: pending, j1: rate_limited, j2: sent, j3: failed
+      await prisma.emailJob.update({
+        where: { id: emailJobs[1].id },
+        data: { status: "rate_limited" },
+      });
+      await prisma.emailJob.update({
+        where: { id: emailJobs[2].id },
+        data: { status: "sent", sentAt: new Date() },
+      });
+      await prisma.emailJob.update({
+        where: { id: emailJobs[3].id },
+        data: { status: "failed", errorMessage: "SMTP error" },
+      });
+
+      // Remove all jobs from BullMQ send queue
+      for (const j of emailJobs) {
+        const job = await emailQueue.getJob(j.id);
+        await job?.remove();
+      }
+
+      const reconcileResult = await reconcileSends(campaignId, { db: prisma });
+
+      // ONLY the pending job (j0) should be reconciled
+      expect(reconcileResult.reconciledCount).toBe(1);
+      expect(reconcileResult.jobIds).toEqual([emailJobs[0].id]);
+
+      // j0 is re-added, j1, j2, j3 are NOT added
+      expect(await emailQueue.getJob(emailJobs[0].id)).toBeDefined();
+      expect(await emailQueue.getJob(emailJobs[1].id)).toBeFalsy();
+      expect(await emailQueue.getJob(emailJobs[2].id)).toBeFalsy();
+      expect(await emailQueue.getJob(emailJobs[3].id)).toBeFalsy();
+    });
   });
 });

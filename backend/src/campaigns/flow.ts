@@ -24,6 +24,7 @@ import { resolveModelName } from "../ai/llm";
 import { selectSampleRecipients } from "./sampling";
 import { listRecipients } from "./recipients";
 import { transition, IllegalTransitionError } from "./stateMachine";
+import { renderCampaignEmail } from "./values";
 import { getGenerateQueue } from "../queue/generateQueue";
 import { ensureGenerateJob } from "./reconcile";
 
@@ -73,6 +74,16 @@ export interface FlowDeps {
   identity?: FlowLiveIdentity;
   clock?: FlowClock;
   enqueue?: (jobs: FlowEnqueueItem[]) => Promise<void>;
+  addSendJob?: (
+    job: {
+      jobId: string;
+      recipientEmail: string;
+      subject: string;
+      body: string;
+      senderEmail: string;
+    },
+    options: { delay: number; jobId: string }
+  ) => Promise<unknown>;
   dailyLimit?: number;
   dailyUsage?: number;
   getDailyUsage?: (model: string) => Promise<number>;
@@ -455,13 +466,317 @@ export async function approveSamples(
  *
  * Must go through transition() so two concurrent refreshes call it exactly once.
  */
+export type ScheduleCampaignFrom = "DRAFT" | "GENERATING" | "EXCEPTION_REVIEW";
+
+export interface CreatedEmailJobInfo {
+  id: string;
+  recipientEmail: string;
+  subject: string;
+  body: string;
+  senderEmail: string;
+  scheduledAt: Date;
+}
+
+async function queueDraftsForSend(
+  tx: any,
+  campaign: { id: string; userId: string; scheduledAt: Date; promptFingerprint: string },
+  deps: FlowDeps
+): Promise<CreatedEmailJobInfo[]> {
+  const senderEmail = deps.ai?.campaignSenderEmail ?? config.ai.campaignSenderEmail;
+
+  const drafts = await tx.generatedDraft.findMany({
+    where: {
+      campaignId: campaign.id,
+      promptVersion: campaign.promptFingerprint,
+      status: { in: ["READY", "APPROVED", "FALLBACK"] },
+      emailJobId: null,
+    },
+    include: {
+      recipient: true,
+    },
+  });
+
+  const createdJobs: CreatedEmailJobInfo[] = [];
+
+  for (const draft of drafts) {
+    const updated = await tx.generatedDraft.update({
+      where: { id: draft.id },
+      data: {
+        status: "QUEUED",
+        emailJob: {
+          create: {
+            userId: campaign.userId,
+            recipientEmail: draft.recipient?.email ?? "",
+            subject: draft.subject,
+            body: draft.body,
+            scheduledAt: campaign.scheduledAt ?? new Date(),
+            status: "pending",
+            senderEmail,
+          },
+        },
+      },
+      select: {
+        id: true,
+        emailJobId: true,
+        emailJob: {
+          select: {
+            id: true,
+            recipientEmail: true,
+            subject: true,
+            body: true,
+            senderEmail: true,
+            scheduledAt: true,
+          },
+        },
+      },
+    });
+
+    if (updated.emailJob) {
+      createdJobs.push(updated.emailJob);
+    }
+  }
+
+  return createdJobs;
+}
+
+async function enqueueSendJobs(
+  jobs: CreatedEmailJobInfo[],
+  deps: FlowDeps
+): Promise<void> {
+  const now = (deps.clock?.now() ?? new Date()).getTime();
+  const logger = deps.logger ?? console;
+
+  for (const job of jobs) {
+    const scheduledAtMs = job.scheduledAt ? new Date(job.scheduledAt).getTime() : now;
+    const delayMs = Math.max(0, scheduledAtMs - now);
+    try {
+      if (deps.addSendJob) {
+        await deps.addSendJob(
+          {
+            jobId: job.id,
+            recipientEmail: job.recipientEmail,
+            subject: job.subject,
+            body: job.body,
+            senderEmail: job.senderEmail,
+          },
+          { delay: delayMs, jobId: job.id }
+        );
+      } else {
+        const { emailQueue } = await import("../queue/queue");
+        await emailQueue.add(
+          "email-job",
+          {
+            jobId: job.id,
+            recipientEmail: job.recipientEmail,
+            subject: job.subject,
+            body: job.body,
+            senderEmail: job.senderEmail,
+          },
+          { delay: delayMs, jobId: job.id }
+        );
+      }
+    } catch (err: unknown) {
+      const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+      logger.error(`[Flow] send enqueue failed: ${errClass}`);
+    }
+  }
+}
+
+/**
+ * Replace scheduleCampaign seam with real body (spec Phase 6a).
+ *
+ * In ONE transaction (timeout 60 s, maxWait 10 s):
+ * - transition the campaign to SCHEDULED with the precondition update
+ * - for every draft with current promptFingerprint whose status is READY, APPROVED or FALLBACK
+ *   and whose emailJobId is null: update the draft with a nested emailJob create and status QUEUED,
+ *   in one statement per draft.
+ * - Drafts in HELD are skipped.
+ * - Two concurrent calls create each EmailJob exactly once.
+ *
+ * AFTER commit:
+ * - add one send-queue job per new EmailJob using the same existing function POST /api/schedule uses.
+ * - If enqueueing fails, log the error class and return normally.
+ */
 export async function scheduleCampaign(
   campaignId: string,
-  from: "GENERATING" | "EXCEPTION_REVIEW",
+  from?: ScheduleCampaignFrom,
   deps: FlowDeps = {}
 ): Promise<boolean> {
   const db = deps.db ?? (await import("../db/pool")).prisma;
-  return transition(db, campaignId, from, "SCHEDULED");
+  let createdJobs: CreatedEmailJobInfo[] = [];
+  let moved = false;
+
+  await db.$transaction(
+    async (tx: any) => {
+      const campaign = await tx.campaign.findUnique({
+        where: { id: campaignId },
+        select: {
+          id: true,
+          status: true,
+          userId: true,
+          scheduledAt: true,
+          promptFingerprint: true,
+        },
+      });
+
+      if (!campaign) {
+        return;
+      }
+
+      const effectiveFrom =
+        from ??
+        (["DRAFT", "GENERATING", "EXCEPTION_REVIEW"].includes(campaign.status)
+          ? (campaign.status as ScheduleCampaignFrom)
+          : undefined);
+
+      if (!effectiveFrom) {
+        return;
+      }
+
+      moved = await transition(tx, campaignId, effectiveFrom, "SCHEDULED");
+      if (!moved) {
+        return;
+      }
+
+      if (campaign.promptFingerprint) {
+        createdJobs = await queueDraftsForSend(
+          tx,
+          {
+            id: campaign.id,
+            userId: campaign.userId,
+            scheduledAt: campaign.scheduledAt,
+            promptFingerprint: campaign.promptFingerprint,
+          },
+          deps
+        );
+      }
+    },
+    { timeout: 60000, maxWait: 10000 }
+  );
+
+  if (moved && createdJobs.length > 0) {
+    await enqueueSendJobs(createdJobs, deps);
+  }
+
+  return moved;
+}
+
+/**
+ * Start scheduling a plain campaign without AI personalization (spec Phase 6a).
+ * Valid only from DRAFT with aiEnabled false.
+ *
+ * In one transaction:
+ * - create a draft for every recipient with status FALLBACK, fallbackReason "AI_DISABLED",
+ *   rendered with renderCampaignEmail and no intro, promptVersion "none".
+ * - store promptFingerprint "none" on the campaign.
+ * - run the same scheduling body as scheduleCampaign (transition DRAFT -> SCHEDULED,
+ *   update drafts with nested emailJob create and status QUEUED).
+ * - EmptyCampaignError when there are no recipients.
+ *
+ * AFTER commit:
+ * - enqueue send jobs.
+ */
+export async function startPlainCampaign(
+  campaignId: string,
+  deps: FlowDeps = {}
+): Promise<{ ok: boolean; createdJobsCount: number }> {
+  const db = deps.db ?? (await import("../db/pool")).prisma;
+  let createdJobs: CreatedEmailJobInfo[] = [];
+
+  await db.$transaction(
+    async (tx: any) => {
+      const campaign = await tx.campaign.findUnique({
+        where: { id: campaignId },
+      });
+
+      if (!campaign) {
+        throw new Error(`Campaign ${campaignId} does not exist`);
+      }
+
+      if (campaign.aiEnabled) {
+        throw new Error(`Campaign ${campaignId} has AI personalization enabled`);
+      }
+
+      if (campaign.status !== "DRAFT") {
+        throw new IllegalTransitionError(campaign.status, "SCHEDULED");
+      }
+
+      const recipients = await listRecipients(tx, campaignId);
+      if (recipients.length === 0) {
+        throw new EmptyCampaignError(`Campaign ${campaignId} has zero recipients`);
+      }
+
+      await tx.campaign.update({
+        where: { id: campaignId },
+        data: {
+          promptFingerprint: "none",
+        },
+      });
+
+      const draftsData = recipients.map((r) => {
+        const rendered = renderCampaignEmail({
+          subjectTemplate: campaign.subjectTemplate,
+          bodyTemplate: campaign.bodyTemplate,
+          recipient: {
+            firstName: r.firstName,
+            company: r.company,
+            role: r.role,
+            note: r.note,
+            extra: (r.extra ?? undefined) as Record<string, unknown> | undefined,
+          },
+          campaign,
+          aiIntro: undefined,
+        });
+
+        const id = draftId({
+          campaignId: campaign.id,
+          recipientId: r.id,
+          templateHash: campaign.templateHash,
+          promptFingerprint: "none",
+        });
+
+        return {
+          id,
+          campaignId: campaign.id,
+          recipientId: r.id,
+          status: "FALLBACK" as const,
+          fallbackReason: "AI_DISABLED",
+          subject: rendered.subject,
+          body: rendered.body,
+          promptVersion: "none",
+          isSample: false,
+        };
+      });
+
+      await tx.generatedDraft.createMany({
+        data: draftsData,
+        skipDuplicates: true,
+      });
+
+      const moved = await transition(tx, campaignId, "DRAFT", "SCHEDULED");
+      if (!moved) {
+        throw new IllegalTransitionError(campaign.status, "SCHEDULED");
+      }
+
+      createdJobs = await queueDraftsForSend(
+        tx,
+        {
+          id: campaign.id,
+          userId: campaign.userId,
+          scheduledAt: campaign.scheduledAt,
+          promptFingerprint: "none",
+        },
+        deps
+      );
+    },
+    { timeout: 60000, maxWait: 10000 }
+  );
+
+  if (createdJobs.length > 0) {
+    await enqueueSendJobs(createdJobs, deps);
+  }
+
+  return { ok: true, createdJobsCount: createdJobs.length };
 }
 
 /**

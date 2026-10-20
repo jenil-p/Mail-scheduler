@@ -17,7 +17,14 @@
 
 import type { PrismaClient, CampaignStatus } from "../generated/prisma/client";
 import { config } from "../config";
-import { reconcileGeneration, type ReconcileGenerationDeps, type ReconcileGenerationResult } from "./reconcile";
+import {
+  reconcileGeneration,
+  reconcileSends,
+  type ReconcileGenerationDeps,
+  type ReconcileGenerationResult,
+  type ReconcileSendsDeps,
+  type ReconcileSendsResult,
+} from "./reconcile";
 import { refreshCampaign, type FlowDeps } from "./flow";
 
 export interface CampaignTickOptions {
@@ -27,6 +34,7 @@ export interface CampaignTickOptions {
 export interface CampaignTickDeps {
   db?: PrismaClient;
   reconcile?: (campaignId?: string, deps?: ReconcileGenerationDeps) => Promise<ReconcileGenerationResult>;
+  reconcileSends?: (campaignId?: string, deps?: ReconcileSendsDeps) => Promise<ReconcileSendsResult>;
   refresh?: (
     campaignId: string,
     deps?: FlowDeps
@@ -87,6 +95,20 @@ export async function executeCampaignTickRun(deps: CampaignTickDeps = {}): Promi
     } catch (err: unknown) {
       const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
       logger.error(`[CampaignTick] Campaign ${campaign.id} refresh error: ${errClass}`);
+    }
+  }
+
+  // 3. Reconcile send jobs for SCHEDULED and SENDING campaigns
+  if (deps.reconcileSends || (db as any).emailJob) {
+    try {
+      const reconcileSendsFn = deps.reconcileSends ?? reconcileSends;
+      const outcome = await reconcileSendsFn(undefined, { db });
+      if (outcome.reconciledCount > 0) {
+        logger.info(`[CampaignTick] Reconciled ${outcome.reconciledCount} send jobs`);
+      }
+    } catch (err: unknown) {
+      const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+      logger.error(`[CampaignTick] Reconcile sends error: ${errClass}`);
     }
   }
 }

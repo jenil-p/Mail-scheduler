@@ -266,23 +266,23 @@ suite("campaign drafts resolution (integration)", () => {
     const campScheduled = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
     expect(campScheduled.status).toBe("SCHEDULED");
 
-    // 9. Verify getCampaignSummary counts
+    // 9. Verify getCampaignSummary counts (all resolved drafts are now QUEUED in SCHEDULED status)
     const summary = await getCampaignSummary(campaignId, { db: prisma });
     expect(summary.status).toBe("SCHEDULED");
     expect(summary.recipientCount).toBe(3);
     expect(summary.draftCounts.FLAGGED).toBe(0);
-    expect(summary.draftCounts.APPROVED).toBe(1);
-    expect(summary.draftCounts.READY).toBe(2);
+    expect(summary.draftCounts.QUEUED).toBe(3);
 
     // 10. Verify listDrafts paging and filters
     const allDraftsList = await listDrafts(campaignId, {}, { db: prisma });
     expect(allDraftsList).toHaveLength(3);
 
-    const approvedList = await listDrafts(campaignId, { status: "APPROVED" }, { db: prisma });
-    expect(approvedList).toHaveLength(1);
-    expect(approvedList[0].id).toBe(flaggedDraft.id);
-    expect(approvedList[0].resolvedBy).toBe("USER");
-    expect(approvedList[0].recipient.email).toBeTruthy();
+    const queuedList = await listDrafts(campaignId, { status: "QUEUED" }, { db: prisma });
+    expect(queuedList).toHaveLength(3);
+    const resolvedDraftItem = queuedList.find((d) => d.id === flaggedDraft.id);
+    expect(resolvedDraftItem).toBeDefined();
+    expect(resolvedDraftItem?.resolvedBy).toBe("USER");
+    expect(resolvedDraftItem?.recipient.email).toBeTruthy();
   });
 
   it("bulkResolve resolves all flagged drafts and transitions EXCEPTION_REVIEW -> SCHEDULED", async () => {
@@ -366,8 +366,6 @@ suite("campaign drafts resolution (integration)", () => {
     const summary = await getCampaignSummary(campaignId, { db: prisma });
     expect(summary.status).toBe("SCHEDULED");
     expect(summary.draftCounts.FLAGGED).toBe(0);
-    expect(summary.draftCounts.APPROVED).toBe(1);
-    expect(summary.draftCounts.FALLBACK).toBe(1);
-    expect(summary.draftCounts.READY).toBe(1);
+    expect(summary.draftCounts.QUEUED).toBe(3);
   });
 });

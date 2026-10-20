@@ -45,6 +45,24 @@ describe("tick", () => {
       expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("2 generation drafts"));
     });
 
+    it("calls reconcileSends during the tick", async () => {
+      const db = {
+        campaign: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      } as any;
+
+      const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 0, draftIds: [] });
+      const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 1, jobIds: ["j1"] });
+      const refresh = vi.fn().mockResolvedValue({ refreshed: false });
+      const logger = { info: vi.fn(), error: vi.fn() };
+
+      await executeCampaignTickRun({ db, reconcile, reconcileSends, refresh, logger });
+
+      expect(reconcileSends).toHaveBeenCalledTimes(1);
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("1 send jobs"));
+    });
+
     it("continues running other campaigns when one campaign refresh fails", async () => {
       const db = {
         campaign: {
