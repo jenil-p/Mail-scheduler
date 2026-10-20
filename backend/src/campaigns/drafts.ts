@@ -159,6 +159,12 @@ export interface CampaignSummary {
   recipientCount: number;
   draftCounts: Record<DraftStatus, number>;
   counts: Record<DraftStatus, number>;
+  sendCounts: {
+    pending: number;
+    rate_limited: number;
+    sent: number;
+    failed: number;
+  };
 }
 
 export const BULK_RESOLVE_CHUNK_SIZE = 50;
@@ -626,6 +632,13 @@ export async function getCampaignSummary(
     QUEUED: 0,
   };
 
+  const sendCounts = {
+    pending: 0,
+    rate_limited: 0,
+    sent: 0,
+    failed: 0,
+  };
+
   if (campaign.promptFingerprint) {
     const grouped = await db.generatedDraft.groupBy({
       by: ["status"],
@@ -643,6 +656,25 @@ export async function getCampaignSummary(
         counts[row.status as DraftStatus] = row._count._all;
       }
     }
+
+    const jobGrouped = await db.emailJob.groupBy({
+      by: ["status"],
+      where: {
+        generatedDraft: {
+          campaignId,
+          promptVersion: campaign.promptFingerprint,
+        },
+      },
+      _count: {
+        _all: true,
+      },
+    });
+
+    for (const row of jobGrouped) {
+      if (row.status in sendCounts) {
+        sendCounts[row.status as keyof typeof sendCounts] = row._count._all;
+      }
+    }
   }
 
   return {
@@ -652,5 +684,6 @@ export async function getCampaignSummary(
     recipientCount,
     draftCounts: counts,
     counts,
+    sendCounts,
   };
 }

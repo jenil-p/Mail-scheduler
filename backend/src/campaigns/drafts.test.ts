@@ -18,6 +18,7 @@ function createFakeDb(initialState: {
   campaigns?: any[];
   recipients?: any[];
   drafts?: any[];
+  emailJobs?: any[];
 }) {
   const campaigns = new Map<string, any>(
     (initialState.campaigns ?? []).map((c) => [c.id, { ...c }])
@@ -27,6 +28,9 @@ function createFakeDb(initialState: {
   );
   const drafts = new Map<string, any>(
     (initialState.drafts ?? []).map((d) => [d.id, { ...d }])
+  );
+  const emailJobs = new Map<string, any>(
+    (initialState.emailJobs ?? []).map((j) => [j.id, { ...j }])
   );
 
   const client = {
@@ -178,10 +182,33 @@ function createFakeDb(initialState: {
         }));
       }),
     },
+    emailJob: {
+      groupBy: vi.fn(async ({ by, where }: { by: string[]; where: any }) => {
+        let list = Array.from(emailJobs.values());
+        if (where?.generatedDraft) {
+          const { campaignId, promptVersion } = where.generatedDraft;
+          list = list.filter((j) => {
+            const draft = Array.from(drafts.values()).find((d) => d.emailJobId === j.id);
+            if (!draft) return false;
+            if (campaignId && draft.campaignId !== campaignId) return false;
+            if (promptVersion && draft.promptVersion !== promptVersion) return false;
+            return true;
+          });
+        }
+        const statusCounts = new Map<string, number>();
+        for (const item of list) {
+          statusCounts.set(item.status, (statusCounts.get(item.status) ?? 0) + 1);
+        }
+        return Array.from(statusCounts.entries()).map(([status, count]) => ({
+          status,
+          _count: { _all: count },
+        }));
+      }),
+    },
     $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(client)),
   };
 
-  return { client, campaigns, drafts, recipients };
+  return { client, campaigns, drafts, recipients, emailJobs };
 }
 
 describe("drafts.ts - resolveDraft", () => {
@@ -929,6 +956,12 @@ describe("drafts.ts - getCampaignSummary", () => {
     expect(summary.draftCounts.APPROVED).toBe(1);
     expect(summary.draftCounts.FALLBACK).toBe(0);
     expect(summary.counts).toEqual(summary.draftCounts);
+    expect(summary.sendCounts).toEqual({
+      pending: 0,
+      rate_limited: 0,
+      sent: 0,
+      failed: 0,
+    });
     expect(client.generatedDraft.groupBy).toHaveBeenCalledWith({
       by: ["status"],
       where: {
@@ -938,6 +971,53 @@ describe("drafts.ts - getCampaignSummary", () => {
       _count: {
         _all: true,
       },
+    });
+    expect(client.emailJob.groupBy).toHaveBeenCalledWith({
+      by: ["status"],
+      where: {
+        generatedDraft: {
+          campaignId: "camp-1",
+          promptVersion: "fp-v1",
+        },
+      },
+      _count: {
+        _all: true,
+      },
+    });
+  });
+
+  it("populates sendCounts from emailJob.groupBy for current fingerprint", async () => {
+    const { client } = createFakeDb({
+      campaigns: [
+        {
+          id: "camp-1",
+          status: "SENDING" as CampaignStatus,
+          errorMessage: null,
+          scheduledAt,
+          promptFingerprint: "fp-v1",
+        },
+      ],
+      recipients,
+      drafts: [
+        { id: "d-1", campaignId: "camp-1", promptVersion: "fp-v1", status: "QUEUED", emailJobId: "job-1" },
+        { id: "d-2", campaignId: "camp-1", promptVersion: "fp-v1", status: "QUEUED", emailJobId: "job-2" },
+        { id: "d-3", campaignId: "camp-1", promptVersion: "fp-v1", status: "QUEUED", emailJobId: "job-3" },
+        { id: "d-old", campaignId: "camp-1", promptVersion: "old-fp", status: "QUEUED", emailJobId: "job-old" },
+      ],
+      emailJobs: [
+        { id: "job-1", status: "sent" },
+        { id: "job-2", status: "rate_limited" },
+        { id: "job-3", status: "pending" },
+        { id: "job-old", status: "pending" },
+      ],
+    });
+
+    const summary = await getCampaignSummary("camp-1", { db: client as any });
+    expect(summary.sendCounts).toEqual({
+      pending: 1, // job-3 only, job-old ignored
+      rate_limited: 1, // job-2
+      sent: 1, // job-1
+      failed: 0,
     });
   });
 });
