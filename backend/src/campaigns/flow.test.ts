@@ -95,10 +95,16 @@ function createFakeDb(initialState: {
         return list.map((d) => {
           const res = { ...d };
           if (include?.recipient) {
-            res.recipient = recipients.get(d.recipientId) ?? {
-              id: d.recipientId ?? "r1",
-              email: `${d.recipientId ?? "r1"}@example.com`,
-            };
+            if ("recipient" in d) {
+              res.recipient = d.recipient;
+            } else if (d.recipientId && !recipients.has(d.recipientId)) {
+              res.recipient = null;
+            } else {
+              res.recipient = recipients.get(d.recipientId) ?? {
+                id: d.recipientId ?? "r1",
+                email: `${d.recipientId ?? "r1"}@example.com`,
+              };
+            }
           }
           return res;
         });
@@ -1306,6 +1312,39 @@ describe("flow", () => {
           jobId: createdEmailJob.id,
         })
       );
+    });
+
+    it("a draft without a recipient throws an Error instead of creating an EmailJob with empty recipientEmail", async () => {
+      const fingerprint = "fp1";
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            userId: "owner@example.com",
+            status: "GENERATING",
+            promptFingerprint: fingerprint,
+            scheduledAt: new Date(),
+          },
+        ],
+        recipients: [], // No recipients in DB
+        drafts: [
+          {
+            id: "d1",
+            campaignId: "c1",
+            recipientId: "missing-recipient",
+            promptVersion: fingerprint,
+            status: "READY",
+            subject: "S",
+            body: "B",
+          },
+        ],
+      });
+
+      await expect(
+        scheduleCampaign("c1", "GENERATING", { db })
+      ).rejects.toThrow(/Draft d1 has no recipient/);
+
+      expect(db._state.emailJobs.size).toBe(0);
     });
   });
 

@@ -519,7 +519,7 @@ export async function queueDraftsForSend(
   let skippedCount = 0;
 
   for (const draft of drafts) {
-    if (!draft.recipient) {
+    if (!draft.recipient || !draft.recipient.email) {
       throw new Error(`Draft ${draft.id} has no recipient`);
     }
 
@@ -535,7 +535,7 @@ export async function queueDraftsForSend(
           emailJob: {
             create: {
               userId: campaign.userId,
-              recipientEmail: draft.recipient.email ?? "",
+              recipientEmail: draft.recipient.email,
               subject: draft.subject,
               body: draft.body,
               scheduledAt: campaign.scheduledAt ?? new Date(),
