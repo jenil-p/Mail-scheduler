@@ -14,6 +14,7 @@ function createFakeDb(initialState: {
   campaigns?: any[];
   recipients?: any[];
   drafts?: any[];
+  emailJobs?: any[];
 }) {
   const campaigns = new Map<string, any>(
     (initialState.campaigns ?? []).map((c) => [c.id, { ...c }])
@@ -23,6 +24,9 @@ function createFakeDb(initialState: {
   );
   const drafts = new Map<string, any>(
     (initialState.drafts ?? []).map((d) => [d.id, { ...d }])
+  );
+  const emailJobs = new Map<string, any>(
+    (initialState.emailJobs ?? []).map((j) => [j.id, { ...j }])
   );
 
   const client = {
@@ -79,11 +83,67 @@ function createFakeDb(initialState: {
         }
         return list.map((d) => ({ ...d }));
       }),
+      updateMany: vi.fn(async ({ where, data }: { where: any; data: any }) => {
+        let count = 0;
+        for (const d of drafts.values()) {
+          const idMatches = where.id?.in
+            ? where.id.in.includes(d.id)
+            : where.id === undefined || where.id === d.id;
+          if (idMatches) {
+            Object.assign(d, data);
+            count++;
+          }
+        }
+        return { count };
+      }),
+    },
+    emailJob: {
+      findMany: vi.fn(async ({ where, take }: { where?: any; take?: number }) => {
+        let list = Array.from(emailJobs.values());
+        if (where?.status?.in) {
+          list = list.filter((j) => where.status.in.includes(j.status));
+        } else if (where?.status) {
+          list = list.filter((j) => j.status === where.status);
+        }
+        if (where?.generatedDraft?.campaignId) {
+          const cId = where.generatedDraft.campaignId;
+          list = list.filter((j) => {
+            const draft = Array.from(drafts.values()).find((d) => d.emailJobId === j.id);
+            return draft && draft.campaignId === cId;
+          });
+        }
+        if (take !== undefined) {
+          list = list.slice(0, take);
+        }
+        return list.map((j) => {
+          const draft = Array.from(drafts.values()).find((d) => d.emailJobId === j.id);
+          return {
+            ...j,
+            generatedDraft: draft ? { id: draft.id } : null,
+          };
+        });
+      }),
+      deleteMany: vi.fn(async ({ where }: { where: any }) => {
+        let count = 0;
+        const idsToDelete = where?.id?.in ? where.id.in : where?.id ? [where.id] : [];
+        for (const id of idsToDelete) {
+          if (emailJobs.delete(id)) {
+            count++;
+            for (const d of drafts.values()) {
+              if (d.emailJobId === id) {
+                d.emailJobId = null;
+                d.emailJob = null;
+              }
+            }
+          }
+        }
+        return { count };
+      }),
     },
     $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(client)),
   };
 
-  return { client, campaigns, drafts, recipients };
+  return { client, campaigns, drafts, recipients, emailJobs };
 }
 
 describe("control.ts - pauseCampaign", () => {
@@ -369,6 +429,8 @@ describe("control.ts - cancelCampaign", () => {
     "GENERATING",
     "EXCEPTION_REVIEW",
     "PAUSED",
+    "SCHEDULED",
+    "SENDING",
   ];
 
   for (const status of allowedStatuses) {
@@ -388,26 +450,101 @@ describe("control.ts - cancelCampaign", () => {
     });
   }
 
-  it("throws CancelNotSupportedYetError when campaign is SCHEDULED", async () => {
-    const { client, campaigns } = createFakeDb({
-      campaigns: [{ id: "camp-1", status: "SCHEDULED" }],
+  it("cancels from SCHEDULED: deletes pending/rate_limited rows, keeps sent/failed rows, sets drafts to HELD, removes non-active queue jobs", async () => {
+    const jobRemovals: string[] = [];
+    const getJob = vi.fn(async (id: string) => {
+      if (id === "job-active") {
+        return {
+          getState: async () => "active",
+          remove: vi.fn(async () => {
+            jobRemovals.push(id);
+          }),
+        };
+      }
+      return {
+        getState: async () => "delayed",
+        remove: vi.fn(async () => {
+          jobRemovals.push(id);
+        }),
+      };
     });
 
-    const err = await cancelCampaign("camp-1", { db: client as any }).catch((e) => e);
-    expect(err).toBeInstanceOf(CancelNotSupportedYetError);
-    expect((err as CancelNotSupportedYetError).code).toBe("CANCEL_NOT_SUPPORTED_YET");
-    expect(campaigns.get("camp-1").status).toBe("SCHEDULED");
+    const { client, campaigns, drafts, emailJobs } = createFakeDb({
+      campaigns: [{ id: "camp-1", status: "SCHEDULED" }],
+      drafts: [
+        { id: "d-pending", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-pending" },
+        { id: "d-ratelimited", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-ratelimited" },
+        { id: "d-active", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-active" },
+        { id: "d-sent", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-sent" },
+        { id: "d-failed", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-failed" },
+      ],
+      emailJobs: [
+        { id: "job-pending", status: "pending" },
+        { id: "job-ratelimited", status: "rate_limited" },
+        { id: "job-active", status: "pending" },
+        { id: "job-sent", status: "sent" },
+        { id: "job-failed", status: "failed" },
+      ],
+    });
+
+    const res = await cancelCampaign("camp-1", { db: client as any, getJob });
+    expect(res.ok).toBe(true);
+
+    // (a) Campaign transitioned to CANCELLED
+    expect(campaigns.get("camp-1").status).toBe("CANCELLED");
+
+    // (b) Pending and rate_limited rows deleted
+    expect(emailJobs.has("job-pending")).toBe(false);
+    expect(emailJobs.has("job-ratelimited")).toBe(false);
+    expect(emailJobs.has("job-active")).toBe(false); // pending in DB, active in queue
+
+    // Sent and failed rows kept
+    expect(emailJobs.has("job-sent")).toBe(true);
+    expect(emailJobs.has("job-failed")).toBe(true);
+
+    // Drafts for deleted jobs moved to HELD and emailJobId SetNull
+    expect(drafts.get("d-pending").status).toBe("HELD");
+    expect(drafts.get("d-pending").emailJobId).toBeNull();
+    expect(drafts.get("d-ratelimited").status).toBe("HELD");
+    expect(drafts.get("d-ratelimited").emailJobId).toBeNull();
+    expect(drafts.get("d-active").status).toBe("HELD");
+    expect(drafts.get("d-active").emailJobId).toBeNull();
+
+    // Sent and failed drafts remain untouched
+    expect(drafts.get("d-sent").status).toBe("QUEUED");
+    expect(drafts.get("d-sent").emailJobId).toBe("job-sent");
+    expect(drafts.get("d-failed").status).toBe("QUEUED");
+    expect(drafts.get("d-failed").emailJobId).toBe("job-failed");
+
+    // (c) Queue jobs removed unless active
+    expect(jobRemovals).toContain("job-pending");
+    expect(jobRemovals).toContain("job-ratelimited");
+    expect(jobRemovals).not.toContain("job-active");
   });
 
-  it("throws CancelNotSupportedYetError when campaign is SENDING", async () => {
+  it("survives queue removal errors: logs error class and continues", async () => {
+    const logger = { error: vi.fn(), info: vi.fn() };
+    const getJob = vi.fn(async () => ({
+      getState: async () => "waiting",
+      remove: vi.fn(async () => {
+        throw new TypeError("BullMQ connection error");
+      }),
+    }));
+
     const { client, campaigns } = createFakeDb({
       campaigns: [{ id: "camp-1", status: "SENDING" }],
+      drafts: [
+        { id: "d-1", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-1" },
+      ],
+      emailJobs: [
+        { id: "job-1", status: "pending" },
+      ],
     });
 
-    const err = await cancelCampaign("camp-1", { db: client as any }).catch((e) => e);
-    expect(err).toBeInstanceOf(CancelNotSupportedYetError);
-    expect((err as CancelNotSupportedYetError).code).toBe("CANCEL_NOT_SUPPORTED_YET");
-    expect(campaigns.get("camp-1").status).toBe("SENDING");
+    const res = await cancelCampaign("camp-1", { db: client as any, getJob, logger });
+    expect(res.ok).toBe(true);
+    expect(campaigns.get("camp-1").status).toBe("CANCELLED");
+    expect(logger.error).toHaveBeenCalledWith("[Control] queue remove failed: TypeError");
   });
 
   it("throws IllegalTransitionError when campaign is already CANCELLED or COMPLETED", async () => {

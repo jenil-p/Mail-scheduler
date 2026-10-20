@@ -51,6 +51,10 @@ export interface ControlDeps {
   reconcile?: (campaignId: string) => Promise<unknown>;
   enqueue?: (jobs: FlowEnqueueItem[]) => Promise<void>;
   sampleSize?: number;
+  chunkSize?: number;
+  getJob?: (
+    jobId: string
+  ) => Promise<{ getState: () => Promise<string>; remove: () => Promise<void> } | null | undefined>;
   logger?: {
     error: (message: string) => void;
     info?: (message: string) => void;
@@ -71,6 +75,8 @@ export const ALLOWED_CANCEL_STATUSES: readonly CampaignStatus[] = [
   "GENERATING",
   "EXCEPTION_REVIEW",
   "PAUSED",
+  "SCHEDULED",
+  "SENDING",
 ] as const;
 
 /**
@@ -230,16 +236,26 @@ export async function resumeCampaign(
 }
 
 /**
- * Cancel a campaign before it is scheduled or sent.
- * Allowed from: DRAFT, SAMPLING, SAMPLE_REVIEW, GENERATING, EXCEPTION_REVIEW, PAUSED.
- * From SCHEDULED or SENDING: throws CancelNotSupportedYetError.
+ * Cancel a campaign (spec Phase 6b).
+ * Allowed from: DRAFT, SAMPLING, SAMPLE_REVIEW, GENERATING, EXCEPTION_REVIEW, PAUSED, SCHEDULED, SENDING.
+ *
+ * In this order:
+ * (a) transition the campaign to CANCELLED;
+ * (b) in chunks of 50: find the campaign's EmailJobs with status pending or rate_limited,
+ *     delete those rows (the draft's emailJobId becomes null through SetNull) and set the draft
+ *     status to HELD; never touch sent or failed rows;
+ * (c) best-effort remove their jobs from the send queue (getJob, remove unless the job is active),
+ *     logging only the error class on failure.
  */
 export async function cancelCampaign(
   campaignId: string,
   deps: ControlDeps = {}
 ): Promise<{ ok: boolean }> {
   const db = deps.db ?? (await import("../db/pool")).prisma;
+  const logger = deps.logger ?? console;
+  const chunkSize = deps.chunkSize ?? 50;
 
+  // (a) Transition campaign to CANCELLED
   await db.$transaction(async (tx) => {
     const campaign = await tx.campaign.findUnique({
       where: { id: campaignId },
@@ -247,12 +263,6 @@ export async function cancelCampaign(
     });
     if (!campaign) {
       throw new Error(`Campaign ${campaignId} does not exist`);
-    }
-
-    if (campaign.status === "SCHEDULED" || campaign.status === "SENDING") {
-      throw new CancelNotSupportedYetError(
-        `Cancelling a ${campaign.status} campaign is not supported yet`
-      );
     }
 
     if (!ALLOWED_CANCEL_STATUSES.includes(campaign.status)) {
@@ -264,6 +274,76 @@ export async function cancelCampaign(
       throw new IllegalTransitionError(campaign.status, "CANCELLED");
     }
   });
+
+  // (b) In chunks of 50: find pending or rate_limited EmailJobs, delete them and set draft status to HELD
+  const deletedJobIds: string[] = [];
+
+  while (true) {
+    const jobs = await db.emailJob.findMany({
+      where: {
+        generatedDraft: {
+          campaignId,
+        },
+        status: { in: ["pending", "rate_limited"] },
+      },
+      take: chunkSize,
+      select: {
+        id: true,
+        generatedDraft: {
+          select: { id: true },
+        },
+      },
+    });
+
+    if (jobs.length === 0) {
+      break;
+    }
+
+    const jobIds = jobs.map((j) => j.id);
+    const draftIds = jobs
+      .map((j) => j.generatedDraft?.id)
+      .filter((id): id is string => Boolean(id));
+
+    await db.$transaction(async (tx) => {
+      if (draftIds.length > 0) {
+        await tx.generatedDraft.updateMany({
+          where: { id: { in: draftIds } },
+          data: { status: "HELD" },
+        });
+      }
+
+      await tx.emailJob.deleteMany({
+        where: { id: { in: jobIds } },
+      });
+    });
+
+    deletedJobIds.push(...jobIds);
+  }
+
+  // (c) Best-effort remove from send queue (getJob, remove unless the job is active)
+  if (deletedJobIds.length > 0) {
+    const getJob =
+      deps.getJob ??
+      (async (id: string) => {
+        const { emailQueue } = await import("../queue/queue");
+        return emailQueue.getJob(id);
+      });
+
+    for (const jobId of deletedJobIds) {
+      try {
+        const job = await getJob(jobId);
+        if (job) {
+          const state = await job.getState();
+          if (state !== "active") {
+            await job.remove();
+          }
+        }
+      } catch (err: unknown) {
+        const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+        logger.error(`[Control] queue remove failed: ${errClass}`);
+      }
+    }
+  }
 
   return { ok: true };
 }
