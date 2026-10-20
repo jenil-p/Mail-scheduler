@@ -17,6 +17,7 @@ import { config } from "../config";
 import { getGenerateQueue, generateJobOptions, GENERATE_JOB_NAME } from "../queue/generateQueue";
 import type { GenerateJobData } from "../queue/generateJob";
 import { enqueueSendJob } from "../queue/sendJobs";
+import { queueDraftsForSend, type CreatedEmailJobInfo } from "./flow";
 
 export const LIVE_JOB_STATES = new Set([
   "waiting",
@@ -85,6 +86,7 @@ export interface ReconcileGenerationResult {
 
 export interface ReconcileSendsDeps {
   db?: PrismaClient;
+  ai?: AiConfig;
   clock?: { now: () => Date };
   getJob?: (
     id: string
@@ -94,6 +96,10 @@ export interface ReconcileSendsDeps {
     data: any,
     options: { delay: number; jobId: string }
   ) => Promise<unknown>;
+  logger?: {
+    info?: (message: string) => void;
+    error: (message: string) => void;
+  };
 }
 
 export interface ReconcileSendsResult {
@@ -116,51 +122,44 @@ export async function reconcileSends(
 ): Promise<ReconcileSendsResult> {
   const db = deps.db ?? (await import("../db/pool")).prisma;
 
-  let targetCampaignIds: string[] = [];
+  let targetCampaigns: Array<{
+    id: string;
+    userId: string;
+    scheduledAt: Date;
+    promptFingerprint: string | null;
+  }> = [];
 
   if (campaignId) {
     const campaign = await db.campaign.findUnique({
       where: { id: campaignId },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        userId: true,
+        scheduledAt: true,
+        promptFingerprint: true,
+        status: true,
+      },
     });
     if (!campaign || (campaign.status !== "SCHEDULED" && campaign.status !== "SENDING")) {
       return { reconciledCount: 0, jobIds: [] };
     }
-    targetCampaignIds = [campaign.id];
+    targetCampaigns = [campaign];
   } else {
-    const campaigns = await db.campaign.findMany({
+    targetCampaigns = await db.campaign.findMany({
       where: {
         status: { in: ["SCHEDULED", "SENDING"] },
       },
-      select: { id: true },
-    });
-    targetCampaignIds = campaigns.map((c) => c.id);
-  }
-
-  if (targetCampaignIds.length === 0) {
-    return { reconciledCount: 0, jobIds: [] };
-  }
-
-  // Find EmailJobs linked through drafts that are status pending.
-  // Never touch rows that are rate_limited, sent or failed.
-  const pendingJobs = await db.emailJob.findMany({
-    where: {
-      status: "pending",
-      generatedDraft: {
-        campaignId: { in: targetCampaignIds },
+      select: {
+        id: true,
+        userId: true,
+        scheduledAt: true,
+        promptFingerprint: true,
+        status: true,
       },
-    },
-    select: {
-      id: true,
-      recipientEmail: true,
-      subject: true,
-      body: true,
-      senderEmail: true,
-      scheduledAt: true,
-    },
-  });
+    });
+  }
 
-  if (pendingJobs.length === 0) {
+  if (targetCampaigns.length === 0) {
     return { reconciledCount: 0, jobIds: [] };
   }
 
@@ -175,6 +174,61 @@ export async function reconcileSends(
 
   const now = (deps.clock?.now() ?? new Date()).getTime();
   const reconciledJobIds: string[] = [];
+
+  // Sweep: for campaigns in SCHEDULED or SENDING, drafts with the current fingerprint,
+  // status READY, APPROVED or FALLBACK and emailJobId null get an EmailJob through
+  // queueDraftsForSend in a transaction, then the send jobs are enqueued.
+  for (const campaign of targetCampaigns) {
+    if (!campaign.promptFingerprint) continue;
+
+    let sweepJobs: CreatedEmailJobInfo[] = [];
+    if (typeof (db as any).$transaction === "function") {
+      await (db as any).$transaction(async (tx: any) => {
+        sweepJobs = await queueDraftsForSend(
+          tx,
+          {
+            id: campaign.id,
+            userId: campaign.userId,
+            scheduledAt: campaign.scheduledAt,
+            promptFingerprint: campaign.promptFingerprint!,
+          },
+          deps
+        );
+      });
+    }
+
+    for (const job of sweepJobs) {
+      const scheduledAtMs = job.scheduledAt ? new Date(job.scheduledAt).getTime() : now;
+      const delayMs = Math.max(0, scheduledAtMs - now);
+
+      await enqueueSendJob(
+        job,
+        { delayMs },
+        { addJob }
+      );
+      reconciledJobIds.push(job.id);
+    }
+  }
+
+  // Find EmailJobs linked through drafts that are status pending.
+  // Never touch rows that are rate_limited, sent or failed.
+  const pendingJobs = await db.emailJob.findMany({
+    where: {
+      status: "pending",
+      generatedDraft: {
+        campaignId: { in: targetCampaigns.map((c) => c.id) },
+      },
+      ...(reconciledJobIds.length > 0 ? { id: { notIn: reconciledJobIds } } : {}),
+    },
+    select: {
+      id: true,
+      recipientEmail: true,
+      subject: true,
+      body: true,
+      senderEmail: true,
+      scheduledAt: true,
+    },
+  });
 
   for (const job of pendingJobs) {
     const existingJob = await getJob(job.id);

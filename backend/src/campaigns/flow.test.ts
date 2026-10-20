@@ -103,9 +103,15 @@ function createFakeDb(initialState: {
           return res;
         });
       }),
-      update: vi.fn(async ({ where, data }: { where: { id: string }; data: any }) => {
+      update: vi.fn(async ({ where, data }: { where: { id: string; status?: any; emailJobId?: any }; data: any }) => {
         const existing = drafts.get(where.id);
         if (!existing) throw new Error(`Draft ${where.id} not found`);
+        if (where.status !== undefined && existing.status !== where.status) {
+          throw new Error(`Record to update not found (status precondition failed)`);
+        }
+        if ((where.emailJobId === null || (where as any).emailJob === null) && existing.emailJobId != null) {
+          throw new Error(`Record to update not found (emailJobId precondition failed)`);
+        }
         let emailJob = existing.emailJob;
         if (data.emailJob?.create) {
           const id = `job-${where.id}`;
@@ -1203,6 +1209,103 @@ describe("flow", () => {
       expect(outcome.jobIds).toContain(emailJob.id);
       expect(enqueuedReconciledJobs).toHaveLength(1);
       expect(enqueuedReconciledJobs[0].data.jobId).toBe(emailJob.id);
+    });
+
+    it("draft switched to plain between read and update is not overwritten, and a later reconcileSends creates its EmailJob with plain content", async () => {
+      const fingerprint = "fp1";
+      const scheduledAt = new Date("2026-12-01T12:00:00Z");
+
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            userId: "owner@example.com",
+            status: "GENERATING",
+            promptFingerprint: fingerprint,
+            scheduledAt,
+          },
+        ],
+        recipients: [{ id: "r1", campaignId: "c1", email: "r1@example.com" }],
+        drafts: [
+          {
+            id: "d1",
+            campaignId: "c1",
+            recipientId: "r1",
+            promptVersion: fingerprint,
+            status: "READY",
+            subject: "AI Subject",
+            body: "AI Body",
+          },
+        ],
+      });
+
+      const origFindMany = db.generatedDraft.findMany;
+      db.generatedDraft.findMany = vi.fn(async (args: any) => {
+        const result = await origFindMany(args);
+        // Between read and update, the draft is switched to plain by the user
+        const d1 = db._state.drafts.get("d1");
+        if (d1 && d1.status === "READY") {
+          d1.status = "FALLBACK";
+          d1.subject = "Plain Subject";
+          d1.body = "Plain Body";
+          d1.fallbackReason = "USER_PLAIN";
+        }
+        return result;
+      });
+
+      const addSendJob = vi.fn();
+      const logger = { info: vi.fn(), error: vi.fn() };
+
+      const moved = await scheduleCampaign("c1", "GENERATING", {
+        db,
+        addSendJob,
+        logger,
+      });
+
+      expect(moved).toBe(true);
+
+      // Verify draft was NOT overwritten with old content during scheduleCampaign
+      const d1AfterSchedule = db._state.drafts.get("d1");
+      expect(d1AfterSchedule.status).toBe("FALLBACK");
+      expect(d1AfterSchedule.subject).toBe("Plain Subject");
+      expect(d1AfterSchedule.body).toBe("Plain Body");
+      expect(d1AfterSchedule.emailJobId).toBeUndefined();
+
+      // No send job was enqueued because the draft was skipped
+      expect(addSendJob).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("Skipped 1 drafts that no longer matched preconditions")
+      );
+
+      // Now run reconcileSends (the sweep should pick up d1 with status FALLBACK)
+      const reconcileAddJob = vi.fn().mockResolvedValue(undefined);
+      const sweepOutcome = await reconcileSends("c1", {
+        db,
+        addJob: reconcileAddJob,
+      });
+
+      expect(sweepOutcome.reconciledCount).toBe(1);
+      const d1AfterReconcile = db._state.drafts.get("d1");
+      expect(d1AfterReconcile.status).toBe("QUEUED");
+      expect(d1AfterReconcile.emailJobId).toBeDefined();
+
+      const createdEmailJob = db._state.emailJobs.get(d1AfterReconcile.emailJobId);
+      expect(createdEmailJob).toBeDefined();
+      expect(createdEmailJob.subject).toBe("Plain Subject");
+      expect(createdEmailJob.body).toBe("Plain Body");
+      expect(createdEmailJob.recipientEmail).toBe("r1@example.com");
+
+      expect(reconcileAddJob).toHaveBeenCalledWith(
+        "email-job",
+        expect.objectContaining({
+          jobId: createdEmailJob.id,
+          subject: "Plain Subject",
+          body: "Plain Body",
+        }),
+        expect.objectContaining({
+          jobId: createdEmailJob.id,
+        })
+      );
     });
   });
 

@@ -478,7 +478,7 @@ export interface CreatedEmailJobInfo {
   scheduledAt: Date;
 }
 
-async function queueDraftsForSend(
+export async function queueDraftsForSend(
   tx: any,
   campaign: { id: string; userId: string; scheduledAt: Date; promptFingerprint: string },
   deps: FlowDeps
@@ -516,43 +516,64 @@ async function queueDraftsForSend(
   });
 
   const createdJobs: CreatedEmailJobInfo[] = [];
+  let skippedCount = 0;
 
   for (const draft of drafts) {
-    const updated = await tx.generatedDraft.update({
-      where: { id: draft.id },
-      data: {
-        status: "QUEUED",
-        emailJob: {
-          create: {
-            userId: campaign.userId,
-            recipientEmail: draft.recipient?.email ?? "",
-            subject: draft.subject,
-            body: draft.body,
-            scheduledAt: campaign.scheduledAt ?? new Date(),
-            status: "pending",
-            senderEmail,
-          },
-        },
-      },
-      select: {
-        id: true,
-        emailJobId: true,
-        emailJob: {
-          select: {
-            id: true,
-            recipientEmail: true,
-            subject: true,
-            body: true,
-            senderEmail: true,
-            scheduledAt: true,
-          },
-        },
-      },
-    });
-
-    if (updated.emailJob) {
-      createdJobs.push(updated.emailJob);
+    if (!draft.recipient) {
+      throw new Error(`Draft ${draft.id} has no recipient`);
     }
+
+    try {
+      const updated = await tx.generatedDraft.update({
+        where: {
+          id: draft.id,
+          status: draft.status,
+          emailJob: null,
+        },
+        data: {
+          status: "QUEUED",
+          emailJob: {
+            create: {
+              userId: campaign.userId,
+              recipientEmail: draft.recipient.email ?? "",
+              subject: draft.subject,
+              body: draft.body,
+              scheduledAt: campaign.scheduledAt ?? new Date(),
+              status: "pending",
+              senderEmail,
+            },
+          },
+        },
+        select: {
+          id: true,
+          emailJobId: true,
+          emailJob: {
+            select: {
+              id: true,
+              recipientEmail: true,
+              subject: true,
+              body: true,
+              senderEmail: true,
+              scheduledAt: true,
+            },
+          },
+        },
+      });
+
+      if (updated.emailJob) {
+        createdJobs.push(updated.emailJob);
+      }
+    } catch (err: any) {
+      if (err instanceof Error && err.message.includes("has no recipient")) {
+        throw err;
+      }
+      skippedCount++;
+    }
+  }
+
+  if (skippedCount > 0) {
+    const logger = deps.logger ?? console;
+    logger.info?.(`[Flow] Skipped ${skippedCount} drafts that no longer matched preconditions`);
   }
 
   return createdJobs;
