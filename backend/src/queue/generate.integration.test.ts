@@ -1004,4 +1004,101 @@ suite("generate worker (integration)", () => {
     expect(fallen.body).not.toContain("{{ai_intro}}");
     expect(fallen.body).toContain("We are running a workshop on support automation.");
   });
+
+  it("does not overwrite a draft set to FALLBACK while its provider call is in flight", async () => {
+    const ai = aiConfig();
+    const campaignId = await createCampaign({ recipients: [{}] });
+    const [recipient] = await recipientsOf(campaignId);
+
+    await enqueue(campaignId, recipient.id, ai);
+    const draft = await draftOf(campaignId, recipient.id);
+    expect(draft).toBeDefined();
+
+    class InFlightMutatingLlmClient extends MockLlmClient {
+      override async generateJson(input: any) {
+        await prisma.generatedDraft.update({
+          where: { id: draft!.id },
+          data: {
+            status: "FALLBACK",
+            fallbackReason: "USER_PLAIN",
+            subject: "Manual Subject",
+            body: "Manual Body",
+          },
+        });
+        return super.generateJson(input);
+      }
+    }
+
+    const llm = new InFlightMutatingLlmClient({
+      script: [{ kind: "success", intro: CLEAN_INTRO }],
+    });
+
+    const res = await processGenerate(processedDeps(llm, ai), {
+      id: draft!.id,
+      data: {
+        draftId: draft!.id,
+        campaignId: draft!.campaignId,
+        recipientId: draft!.recipientId,
+        isSample: draft!.isSample,
+      },
+      attemptsMade: 0,
+      opts: { attempts: 3 },
+    });
+
+    expect(res.outcome).toBe("SKIPPED_NOT_CLAIMED");
+
+    const current = await draftOf(campaignId, recipient.id);
+    expect(current!.status).toBe("FALLBACK");
+    expect(current!.fallbackReason).toBe("USER_PLAIN");
+    expect(current!.subject).toBe("Manual Subject");
+    expect(current!.body).toBe("Manual Body");
+    expect(current!.aiIntro).toBeNull();
+  });
+
+  it("does not overwrite a draft set to QUEUED while its provider call is in flight", async () => {
+    const ai = aiConfig();
+    const campaignId = await createCampaign({ recipients: [{}] });
+    const [recipient] = await recipientsOf(campaignId);
+
+    await enqueue(campaignId, recipient.id, ai);
+    const draft = await draftOf(campaignId, recipient.id);
+    expect(draft).toBeDefined();
+
+    class InFlightMutatingLlmClient extends MockLlmClient {
+      override async generateJson(input: any) {
+        await prisma.generatedDraft.update({
+          where: { id: draft!.id },
+          data: {
+            status: "QUEUED",
+            subject: "Queued Subject",
+            body: "Queued Body",
+          },
+        });
+        return super.generateJson(input);
+      }
+    }
+
+    const llm = new InFlightMutatingLlmClient({
+      script: [{ kind: "success", intro: CLEAN_INTRO }],
+    });
+
+    const res = await processGenerate(processedDeps(llm, ai), {
+      id: draft!.id,
+      data: {
+        draftId: draft!.id,
+        campaignId: draft!.campaignId,
+        recipientId: draft!.recipientId,
+        isSample: draft!.isSample,
+      },
+      attemptsMade: 0,
+      opts: { attempts: 3 },
+    });
+
+    expect(res.outcome).toBe("SKIPPED_NOT_CLAIMED");
+
+    const current = await draftOf(campaignId, recipient.id);
+    expect(current!.status).toBe("QUEUED");
+    expect(current!.subject).toBe("Queued Subject");
+    expect(current!.body).toBe("Queued Body");
+  });
 });

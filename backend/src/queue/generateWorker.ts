@@ -292,8 +292,8 @@ export async function processGenerate(
   // 7. Thin data never reaches the provider (FR-4).
   if (!draft.recipient.hasPersonalizationData) {
     const rendered = renderPlain(draft);
-    await deps.prisma.generatedDraft.update({
-      where: { id: draft.id },
+    const updated = await deps.prisma.generatedDraft.updateMany({
+      where: { id: draft.id, status: "PENDING" },
       data: {
         status: "FALLBACK",
         fallbackReason: FALLBACK_THIN_DATA,
@@ -303,6 +303,11 @@ export async function processGenerate(
       },
     });
 
+    if (updated.count === 0) {
+      log(`draft ${draftId} resolved elsewhere`);
+      return { outcome: "SKIPPED_NOT_CLAIMED" };
+    }
+
     log(`draft ${draftId}: no personalization data, fell back to the plain template`);
     return { outcome: "FALLBACK", fallbackReason: FALLBACK_THIN_DATA };
   }
@@ -311,8 +316,8 @@ export async function processGenerate(
   //    do not call the model. The draft becomes FALLBACK with INJECTION_SUSPECTED.
   if (recipientHasInjection(draft.recipient)) {
     const rendered = renderPlain(draft);
-    await deps.prisma.generatedDraft.update({
-      where: { id: draft.id },
+    const updated = await deps.prisma.generatedDraft.updateMany({
+      where: { id: draft.id, status: "PENDING" },
       data: {
         status: "FALLBACK",
         fallbackReason: FALLBACK_INJECTION_SUSPECTED,
@@ -321,6 +326,11 @@ export async function processGenerate(
         body: rendered.body,
       },
     });
+
+    if (updated.count === 0) {
+      log(`draft ${draftId} resolved elsewhere`);
+      return { outcome: "SKIPPED_NOT_CLAIMED" };
+    }
 
     log(`draft ${draftId}: recipient data matched prompt injection pattern, fell back to the plain template`);
     return { outcome: "FALLBACK", fallbackReason: FALLBACK_INJECTION_SUSPECTED };
@@ -436,8 +446,8 @@ async function generate(
   });
 
   if (failures.length > 0) {
-    await deps.prisma.generatedDraft.update({
-      where: { id: draft.id },
+    const updated = await deps.prisma.generatedDraft.updateMany({
+      where: { id: draft.id, status: "GENERATING" },
       data: {
         status: "FLAGGED",
         flagReasons: failures as unknown as Prisma.InputJsonValue,
@@ -452,13 +462,18 @@ async function generate(
       },
     });
 
+    if (updated.count === 0) {
+      log(`draft ${draft.id} resolved elsewhere`);
+      return { outcome: "SKIPPED_NOT_CLAIMED" };
+    }
+
     const codes = failures.map((f) => f.code).join(", ");
     log(`draft ${draft.id} FLAGGED [${codes}]`);
     return { outcome: "FLAGGED", flagReasons: failures };
   }
 
-  await deps.prisma.generatedDraft.update({
-    where: { id: draft.id },
+  const updated = await deps.prisma.generatedDraft.updateMany({
+    where: { id: draft.id, status: "GENERATING" },
     data: {
       status: "READY",
       flagReasons: Prisma.DbNull,
@@ -472,6 +487,11 @@ async function generate(
       latencyMs,
     },
   });
+
+  if (updated.count === 0) {
+    log(`draft ${draft.id} resolved elsewhere`);
+    return { outcome: "SKIPPED_NOT_CLAIMED" };
+  }
 
   log(
     `draft ${draft.id} READY (${result.model}, ${result.tokensIn}+${result.tokensOut} tokens, ${latencyMs}ms)`

@@ -39,6 +39,8 @@ describe("parseAiConfig", () => {
       // Phase 5a: campaign state machine and tick interval
       instructionMaxLength: 500,
       campaignTickMs: 15_000,
+      // Phase 6a: campaign send path default sender email
+      campaignSenderEmail: "Sendly Scheduler <scheduler@sendly.local>",
     });
   });
 
@@ -54,6 +56,12 @@ describe("parseAiConfig", () => {
     expect(() => parseAiConfig({ LLM_THINKING_BUDGET: "-1" })).toThrowError(
       /LLM_THINKING_BUDGET/
     );
+  });
+
+  it("accepts a custom campaign sender email", () => {
+    expect(
+      parseAiConfig({ CAMPAIGN_SENDER_EMAIL: "custom@example.com" }).campaignSenderEmail
+    ).toBe("custom@example.com");
   });
 
   it("leaves the daily request limit unset for the mock provider (no invented quota)", () => {
