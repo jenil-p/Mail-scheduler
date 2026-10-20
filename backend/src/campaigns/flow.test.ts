@@ -144,6 +144,9 @@ function createFakeDb(initialState: {
         if (where.isSample !== undefined) {
           list = list.filter((d) => d.isSample === where.isSample);
         }
+        if (where.emailJobId === null || (where as any).emailJob === null) {
+          list = list.filter((d) => !d.emailJobId);
+        }
         if (where.status) {
           if (typeof where.status === "string") {
             list = list.filter((d) => d.status === where.status);
@@ -197,6 +200,28 @@ function createFakeDb(initialState: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
         const j = emailJobs.get(where.id);
         return j ? { ...j } : null;
+      }),
+      count: vi.fn(async ({ where }: { where?: any }) => {
+        let list = Array.from(emailJobs.values());
+        if (where?.status) {
+          if (typeof where.status === "string") {
+            list = list.filter((j) => j.status === where.status);
+          } else if (where.status.in) {
+            list = list.filter((j) => where.status.in.includes(j.status));
+          }
+        }
+        if (where?.generatedDraft) {
+          const cId = where.generatedDraft.campaignId;
+          const pVer = where.generatedDraft.promptVersion;
+          list = list.filter((j) => {
+            const draft = Array.from(drafts.values()).find((d) => d.emailJobId === j.id);
+            if (!draft) return false;
+            if (cId && draft.campaignId !== cId) return false;
+            if (pVer && draft.promptVersion !== pVer) return false;
+            return true;
+          });
+        }
+        return list.length;
       }),
     },
     $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => {
@@ -924,8 +949,8 @@ describe("flow", () => {
       expect(db._state.campaigns.get("c1").status).toBe("SCHEDULED");
     });
 
-    it("never touches campaigns in PAUSED, CANCELLED, SCHEDULED, SENDING or COMPLETED", async () => {
-      for (const status of ["PAUSED", "CANCELLED", "SCHEDULED", "SENDING", "COMPLETED"] as CampaignStatus[]) {
+    it("never touches campaigns in DRAFT, SAMPLE_REVIEW, PAUSED, CANCELLED, or COMPLETED", async () => {
+      for (const status of ["DRAFT", "SAMPLE_REVIEW", "PAUSED", "CANCELLED", "COMPLETED"] as CampaignStatus[]) {
         const db = createFakeDb({
           campaigns: [
             {
@@ -940,6 +965,154 @@ describe("flow", () => {
         expect(outcome.refreshed).toBe(false);
         expect(db._state.campaigns.get("c1").status).toBe(status);
       }
+    });
+
+    describe("SCHEDULED and SENDING status progression (Phase 6b)", () => {
+      it("does not advance SCHEDULED when now < scheduledAt", async () => {
+        const scheduledAt = new Date("2026-10-20T12:00:00Z");
+        const clock = { now: () => new Date("2026-10-20T11:59:59Z") };
+        const db = createFakeDb({
+          campaigns: [
+            {
+              id: "c1",
+              status: "SCHEDULED",
+              promptFingerprint: "fp1",
+              scheduledAt,
+            },
+          ],
+        });
+
+        const outcome = await refreshCampaign("c1", { db, clock });
+        expect(outcome.refreshed).toBe(false);
+        expect(db._state.campaigns.get("c1").status).toBe("SCHEDULED");
+      });
+
+      it("advances SCHEDULED -> SENDING when now >= scheduledAt and pending jobs remain", async () => {
+        const scheduledAt = new Date("2026-10-20T12:00:00Z");
+        const clock = { now: () => new Date("2026-10-20T12:00:00Z") };
+        const db = createFakeDb({
+          campaigns: [
+            {
+              id: "c1",
+              status: "SCHEDULED",
+              promptFingerprint: "fp1",
+              scheduledAt,
+            },
+          ],
+          drafts: [
+            { id: "d1", campaignId: "c1", promptVersion: "fp1", status: "QUEUED", emailJobId: "job-1" },
+          ],
+          emailJobs: [
+            { id: "job-1", status: "pending" },
+          ],
+        });
+
+        const outcome = await refreshCampaign("c1", { db, clock });
+        expect(outcome).toEqual({
+          refreshed: true,
+          from: "SCHEDULED",
+          to: "SENDING",
+        });
+        expect(db._state.campaigns.get("c1").status).toBe("SENDING");
+      });
+
+      it("advances SCHEDULED -> COMPLETED when now >= scheduledAt and all drafts are HELD", async () => {
+        const scheduledAt = new Date("2026-10-20T12:00:00Z");
+        const clock = { now: () => new Date("2026-10-20T12:00:05Z") };
+        const db = createFakeDb({
+          campaigns: [
+            {
+              id: "c1",
+              status: "SCHEDULED",
+              promptFingerprint: "fp1",
+              scheduledAt,
+            },
+          ],
+          drafts: [
+            { id: "d1", campaignId: "c1", promptVersion: "fp1", status: "HELD", emailJobId: null },
+            { id: "d2", campaignId: "c1", promptVersion: "fp1", status: "HELD", emailJobId: null },
+          ],
+        });
+
+        const outcome = await refreshCampaign("c1", { db, clock });
+        expect(outcome).toEqual({
+          refreshed: true,
+          from: "SCHEDULED",
+          to: "COMPLETED",
+        });
+        expect(db._state.campaigns.get("c1").status).toBe("COMPLETED");
+      });
+
+      it("does not advance SENDING when unqueued drafts exist (emailJobId is null)", async () => {
+        const db = createFakeDb({
+          campaigns: [
+            {
+              id: "c1",
+              status: "SENDING",
+              promptFingerprint: "fp1",
+            },
+          ],
+          drafts: [
+            { id: "d1", campaignId: "c1", promptVersion: "fp1", status: "READY", emailJobId: null },
+          ],
+        });
+
+        const outcome = await refreshCampaign("c1", { db });
+        expect(outcome.refreshed).toBe(false);
+        expect(db._state.campaigns.get("c1").status).toBe("SENDING");
+      });
+
+      it("does not advance SENDING when linked EmailJobs are pending or rate_limited", async () => {
+        const db = createFakeDb({
+          campaigns: [
+            {
+              id: "c1",
+              status: "SENDING",
+              promptFingerprint: "fp1",
+            },
+          ],
+          drafts: [
+            { id: "d1", campaignId: "c1", promptVersion: "fp1", status: "QUEUED", emailJobId: "job-1" },
+            { id: "d2", campaignId: "c1", promptVersion: "fp1", status: "QUEUED", emailJobId: "job-2" },
+          ],
+          emailJobs: [
+            { id: "job-1", status: "sent" },
+            { id: "job-2", status: "rate_limited" },
+          ],
+        });
+
+        const outcome = await refreshCampaign("c1", { db });
+        expect(outcome.refreshed).toBe(false);
+        expect(db._state.campaigns.get("c1").status).toBe("SENDING");
+      });
+
+      it("advances SENDING -> COMPLETED when all linked EmailJobs are sent or failed and no unqueued drafts", async () => {
+        const db = createFakeDb({
+          campaigns: [
+            {
+              id: "c1",
+              status: "SENDING",
+              promptFingerprint: "fp1",
+            },
+          ],
+          drafts: [
+            { id: "d1", campaignId: "c1", promptVersion: "fp1", status: "QUEUED", emailJobId: "job-1" },
+            { id: "d2", campaignId: "c1", promptVersion: "fp1", status: "QUEUED", emailJobId: "job-2" },
+          ],
+          emailJobs: [
+            { id: "job-1", status: "sent" },
+            { id: "job-2", status: "failed" },
+          ],
+        });
+
+        const outcome = await refreshCampaign("c1", { db });
+        expect(outcome).toEqual({
+          refreshed: true,
+          from: "SENDING",
+          to: "COMPLETED",
+        });
+        expect(db._state.campaigns.get("c1").status).toBe("COMPLETED");
+      });
     });
 
     it("two concurrent refreshCampaign calls call scheduleCampaign exactly once", async () => {

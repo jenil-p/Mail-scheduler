@@ -804,9 +804,46 @@ export async function startPlainCampaign(
 }
 
 /**
+ * Check whether a campaign in SENDING meets the criteria to move to COMPLETED (spec Phase 6b):
+ * - no draft of the current fingerprint is READY, APPROVED or FALLBACK without an emailJobId
+ * - no linked EmailJob is pending or rate_limited (every linked row is sent or failed)
+ * Note: A campaign whose drafts are all HELD also completes at that point.
+ */
+async function checkCompletionCondition(
+  db: any,
+  campaignId: string,
+  fingerprint: string
+): Promise<boolean> {
+  const unqueuedCount = await db.generatedDraft.count({
+    where: {
+      campaignId,
+      promptVersion: fingerprint,
+      status: { in: ["READY", "APPROVED", "FALLBACK"] },
+      emailJobId: null,
+    },
+  });
+
+  if (unqueuedCount > 0) {
+    return false;
+  }
+
+  const pendingOrRateLimitedCount = await db.emailJob.count({
+    where: {
+      generatedDraft: {
+        campaignId,
+        promptVersion: fingerprint,
+      },
+      status: { in: ["pending", "rate_limited"] },
+    },
+  });
+
+  return pendingOrRateLimitedCount === 0;
+}
+
+/**
  * Inspect campaign and draft database state and progress status when ready.
  * Idempotent. Counts only drafts whose promptVersion equals the campaign's promptFingerprint.
- * Never touches campaigns in PAUSED, CANCELLED, SCHEDULED, SENDING or COMPLETED.
+ * Never touches campaigns in DRAFT, SAMPLE_REVIEW, PAUSED, CANCELLED, or COMPLETED.
  */
 export async function refreshCampaign(
   campaignId: string,
@@ -816,20 +853,19 @@ export async function refreshCampaign(
 
   const campaign = await db.campaign.findUnique({
     where: { id: campaignId },
-    select: { id: true, status: true, promptFingerprint: true },
+    select: { id: true, status: true, promptFingerprint: true, scheduledAt: true },
   });
 
   if (!campaign) {
     return { refreshed: false };
   }
 
-  // Never touch campaigns in PAUSED, CANCELLED, SCHEDULED, SENDING or COMPLETED
+  // Never touch campaigns in DRAFT, SAMPLE_REVIEW, PAUSED, CANCELLED, or COMPLETED
   const nonRefreshableStatuses = new Set<CampaignStatus>([
     "DRAFT",
+    "SAMPLE_REVIEW",
     "PAUSED",
     "CANCELLED",
-    "SCHEDULED",
-    "SENDING",
     "COMPLETED",
   ]);
 
@@ -920,6 +956,42 @@ export async function refreshCampaign(
     if (flaggedCount === 0) {
       const moved = await scheduleCampaign(campaignId, "EXCEPTION_REVIEW", deps);
       return { refreshed: moved, from: "EXCEPTION_REVIEW", to: "SCHEDULED" };
+    }
+
+    return { refreshed: false };
+  }
+
+  if (campaign.status === "SCHEDULED") {
+    const now = (deps.clock?.now() ?? new Date()).getTime();
+    const scheduledAtMs = campaign.scheduledAt ? new Date(campaign.scheduledAt).getTime() : 0;
+
+    if (now < scheduledAtMs) {
+      return { refreshed: false };
+    }
+
+    const movedToSending = await transition(db, campaignId, "SCHEDULED", "SENDING");
+    if (!movedToSending) {
+      return { refreshed: false };
+    }
+
+    const canComplete = await checkCompletionCondition(db, campaignId, fingerprint);
+    if (canComplete) {
+      const movedToCompleted = await transition(db, campaignId, "SENDING", "COMPLETED");
+      if (movedToCompleted) {
+        return { refreshed: true, from: "SCHEDULED", to: "COMPLETED" };
+      }
+    }
+
+    return { refreshed: true, from: "SCHEDULED", to: "SENDING" };
+  }
+
+  if (campaign.status === "SENDING") {
+    const canComplete = await checkCompletionCondition(db, campaignId, fingerprint);
+    if (canComplete) {
+      const moved = await transition(db, campaignId, "SENDING", "COMPLETED");
+      if (moved) {
+        return { refreshed: true, from: "SENDING", to: "COMPLETED" };
+      }
     }
 
     return { refreshed: false };
