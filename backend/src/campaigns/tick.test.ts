@@ -23,15 +23,17 @@ describe("tick", () => {
       } as any;
 
       const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 2, draftIds: ["d1", "d2"] });
+      const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
       const refresh = vi.fn().mockResolvedValue({ refreshed: true, from: "SAMPLING", to: "SAMPLE_REVIEW" });
       const logger = {
         info: vi.fn(),
         error: vi.fn(),
       };
 
-      await executeCampaignTickRun({ db, reconcile, refresh, logger });
+      await executeCampaignTickRun({ db, reconcile, reconcileSends, refresh, logger });
 
       expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(reconcileSends).toHaveBeenCalledTimes(1);
       expect(db.campaign.findMany).toHaveBeenCalledWith({
         where: { status: { in: ["SAMPLING", "GENERATING", "EXCEPTION_REVIEW"] } },
         select: { id: true, status: true },
@@ -74,6 +76,7 @@ describe("tick", () => {
       } as any;
 
       const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 0, draftIds: [] });
+      const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
       const refresh = vi.fn()
         .mockRejectedValueOnce(new TypeError("Network error"))
         .mockResolvedValueOnce({ refreshed: true, from: "GENERATING", to: "SCHEDULED" });
@@ -83,7 +86,7 @@ describe("tick", () => {
         error: vi.fn(),
       };
 
-      await executeCampaignTickRun({ db, reconcile, refresh, logger });
+      await executeCampaignTickRun({ db, reconcile, reconcileSends, refresh, logger });
 
       expect(refresh).toHaveBeenCalledTimes(2);
       expect(logger.error).toHaveBeenCalledWith(
@@ -109,13 +112,14 @@ describe("tick", () => {
       } as any;
 
       const reconcile = vi.fn().mockRejectedValue(new DatabaseTimeoutError());
+      const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
       const refresh = vi.fn().mockResolvedValue({ refreshed: false });
       const logger = {
         info: vi.fn(),
         error: vi.fn(),
       };
 
-      await executeCampaignTickRun({ db, reconcile, refresh, logger });
+      await executeCampaignTickRun({ db, reconcile, reconcileSends, refresh, logger });
 
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringMatching(/\[CampaignTick\] Reconcile error: DatabaseTimeoutError/)
@@ -146,6 +150,7 @@ describe("tick", () => {
           return { reconciledCount: 0, draftIds: [] };
         }),
         refresh: vi.fn().mockResolvedValue({ refreshed: false }),
+        reconcileSends: vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] }),
         logger: { info: vi.fn(), error: vi.fn() },
       };
 
@@ -187,7 +192,8 @@ describe("tick", () => {
         },
       } as any;
 
-      const stop = startCampaignTick({ intervalMs: 1000 }, { db, reconcile });
+      const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
+      const stop = startCampaignTick({ intervalMs: 1000 }, { db, reconcile, reconcileSends });
 
       // Run once at start
       expect(reconcile).toHaveBeenCalledTimes(1);
@@ -221,6 +227,7 @@ describe("tick", () => {
           return { reconciledCount: 0, draftIds: [] };
         }),
         refresh: vi.fn().mockResolvedValue({ refreshed: false }),
+        reconcileSends: vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] }),
         logger: { info: vi.fn(), error: vi.fn() },
       };
 

@@ -99,17 +99,15 @@ export async function executeCampaignTickRun(deps: CampaignTickDeps = {}): Promi
   }
 
   // 3. Reconcile send jobs for SCHEDULED and SENDING campaigns
-  if (deps.reconcileSends || (db as any).emailJob) {
-    try {
-      const reconcileSendsFn = deps.reconcileSends ?? reconcileSends;
-      const outcome = await reconcileSendsFn(undefined, { db });
-      if (outcome.reconciledCount > 0) {
-        logger.info(`[CampaignTick] Reconciled ${outcome.reconciledCount} send jobs`);
-      }
-    } catch (err: unknown) {
-      const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
-      logger.error(`[CampaignTick] Reconcile sends error: ${errClass}`);
+  try {
+    const reconcileSendsFn = deps.reconcileSends ?? reconcileSends;
+    const outcome = await reconcileSendsFn(undefined, { db });
+    if (outcome.reconciledCount > 0) {
+      logger.info(`[CampaignTick] Reconciled ${outcome.reconciledCount} send jobs`);
     }
+  } catch (err: unknown) {
+    const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+    logger.error(`[CampaignTick] Reconcile sends error: ${errClass}`);
   }
 }
 
