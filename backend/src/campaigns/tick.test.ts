@@ -1,6 +1,165 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeCampaignTickRun, startCampaignTick, type CampaignTickDeps } from "./tick";
 
+function createFakeDb(initialState: {
+  campaigns?: any[];
+  recipients?: any[];
+  drafts?: any[];
+  emailJobs?: any[];
+}) {
+  const campaigns = new Map<string, any>(
+    (initialState.campaigns ?? []).map((c) => [c.id, { ...c }])
+  );
+  const recipients = new Map<string, any>(
+    (initialState.recipients ?? []).map((r) => [r.id, { ...r }])
+  );
+  const drafts = new Map<string, any>(
+    (initialState.drafts ?? []).map((d) => [d.id, { ...d }])
+  );
+  const emailJobs = new Map<string, any>(
+    (initialState.emailJobs ?? []).map((j) => [j.id, { ...j }])
+  );
+
+  const client = {
+    campaign: {
+      findMany: vi.fn(async ({ where }: { where?: any } = {}) => {
+        let list = Array.from(campaigns.values());
+        if (where?.status?.in) {
+          list = list.filter((c) => where.status.in.includes(c.status));
+        }
+        return list.map((c) => ({ ...c }));
+      }),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const c = campaigns.get(where.id);
+        return c ? { ...c } : null;
+      }),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: any }) => {
+        const c = campaigns.get(where.id);
+        if (!c) throw new Error("Not found");
+        Object.assign(c, data);
+        return { ...c };
+      }),
+      updateMany: vi.fn(async ({ where, data }: { where: { id: string; status: any }; data: any }) => {
+        const c = campaigns.get(where.id);
+        if (c && c.status === where.status) {
+          Object.assign(c, data);
+          return { count: 1 };
+        }
+        return { count: 0 };
+      }),
+    },
+    recipient: {
+      findMany: vi.fn(async ({ where }: { where?: { campaignId: string } }) => {
+        const list = Array.from(recipients.values());
+        if (where?.campaignId) {
+          return list.filter((r) => r.campaignId === where.campaignId).map((r) => ({ ...r }));
+        }
+        return list.map((r) => ({ ...r }));
+      }),
+      count: vi.fn(async ({ where }: { where: { campaignId: string } }) => {
+        return Array.from(recipients.values()).filter((r) => r.campaignId === where.campaignId).length;
+      }),
+    },
+    generatedDraft: {
+      findMany: vi.fn(async ({ where, include }: { where?: any; include?: any }) => {
+        let list = Array.from(drafts.values());
+        if (where?.campaignId) {
+          list = list.filter((d) => d.campaignId === where.campaignId);
+        }
+        if (where?.promptVersion) {
+          list = list.filter((d) => d.promptVersion === where.promptVersion);
+        }
+        if (where?.status) {
+          if (typeof where.status === "string") {
+            list = list.filter((d) => d.status === where.status);
+          } else if (where.status.in) {
+            list = list.filter((d) => where.status.in.includes(d.status));
+          }
+        }
+        if (where?.emailJobId === null) {
+          list = list.filter((d) => !d.emailJobId);
+        }
+        return list.map((d) => {
+          const res = { ...d };
+          if (include?.recipient) {
+            res.recipient = recipients.get(d.recipientId) ?? {
+              id: d.recipientId,
+              email: `${d.recipientId}@example.com`,
+            };
+          }
+          return res;
+        });
+      }),
+      count: vi.fn(async ({ where }: { where: any }) => {
+        let list = Array.from(drafts.values());
+        if (where.campaignId) {
+          list = list.filter((d) => d.campaignId === where.campaignId);
+        }
+        if (where.promptVersion) {
+          list = list.filter((d) => d.promptVersion === where.promptVersion);
+        }
+        if (where.emailJobId === null || (where as any).emailJob === null) {
+          list = list.filter((d) => !d.emailJobId);
+        }
+        if (where.status) {
+          if (typeof where.status === "string") {
+            list = list.filter((d) => d.status === where.status);
+          } else if (where.status.in) {
+            list = list.filter((d) => where.status.in.includes(d.status));
+          }
+        }
+        return list.length;
+      }),
+      update: vi.fn(async ({ where, data }: { where: { id: string; status?: any; emailJob?: any }; data: any }) => {
+        const existing = drafts.get(where.id);
+        if (!existing) throw new Error(`Draft ${where.id} not found`);
+        if (where.status !== undefined && existing.status !== where.status) {
+          throw new Error("Precondition failed");
+        }
+        let emailJob = existing.emailJob;
+        if (data.emailJob?.create) {
+          const id = `job-${where.id}`;
+          emailJob = { id, ...data.emailJob.create };
+          emailJobs.set(id, emailJob);
+        }
+        const updated = {
+          ...existing,
+          ...data,
+          emailJobId: emailJob ? emailJob.id : existing.emailJobId,
+          emailJob,
+        };
+        drafts.set(where.id, updated);
+        return updated;
+      }),
+      updateMany: vi.fn(async ({ where, data }: { where: any; data: any }) => {
+        let count = 0;
+        const targetIds = where.id?.in ?? (where.id ? [where.id] : Array.from(drafts.keys()));
+        for (const id of targetIds) {
+          const d = drafts.get(id);
+          if (!d) continue;
+          if (where.campaignId && d.campaignId !== where.campaignId) continue;
+          if (where.promptVersion && d.promptVersion !== where.promptVersion) continue;
+          if (where.status) {
+            if (typeof where.status === "string" && d.status !== where.status) continue;
+            if (where.status.in && !where.status.in.includes(d.status)) continue;
+          }
+          Object.assign(d, data);
+          count++;
+        }
+        return { count };
+      }),
+    },
+    emailJob: {
+      findMany: vi.fn(async () => Array.from(emailJobs.values())),
+      count: vi.fn(async () => emailJobs.size),
+    },
+    $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(client)),
+    _state: { campaigns, recipients, drafts, emailJobs },
+  };
+
+  return client as any;
+}
+
 describe("tick", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -152,6 +311,136 @@ describe("tick", () => {
         expect.stringMatching(/\[CampaignTick\] Reconcile error: DatabaseTimeoutError/)
       );
       expect(refresh).toHaveBeenCalledWith("c1", expect.objectContaining({ db }));
+    });
+
+    describe("end-to-end deadline tick", () => {
+      const scheduledAt = new Date("2026-11-01T12:00:00Z");
+      const pastDeadline = new Date("2026-11-01T11:59:00Z");
+      const finalizeLeadMs = 120_000; // 2 min lead, deadline was 11:58:00
+
+      it("GENERATING campaign with stuck and flagged drafts reaches SCHEDULED at deadline under FALLBACK_TO_PLAIN", async () => {
+        const db = createFakeDb({
+          campaigns: [
+            {
+              id: "c1",
+              status: "GENERATING",
+              scheduledAt,
+              onUnresolved: "FALLBACK_TO_PLAIN",
+              promptFingerprint: "fp1",
+              subjectTemplate: "Hello {{first_name}}",
+              bodyTemplate: "{{ai_intro}}\nWelcome!",
+              linkUrl: "https://example.com",
+              unsubscribeUrl: "https://example.com/unsub",
+              userId: "user-1",
+            },
+          ],
+          recipients: [
+            { id: "r1", campaignId: "c1", firstName: "Alice", email: "alice@example.com" },
+            { id: "r2", campaignId: "c1", firstName: "Bob", email: "bob@example.com" },
+            { id: "r3", campaignId: "c1", firstName: "Charlie", email: "charlie@example.com" },
+          ],
+          drafts: [
+            { id: "d1", campaignId: "c1", recipientId: "r1", status: "PENDING", promptVersion: "fp1", emailJobId: null },
+            { id: "d2", campaignId: "c1", recipientId: "r2", status: "FLAGGED", promptVersion: "fp1", emailJobId: null, flagReasons: [{ code: "TONE" }] },
+            { id: "d3", campaignId: "c1", recipientId: "r3", status: "READY", promptVersion: "fp1", emailJobId: null, subject: "Sub", body: "Body" },
+          ],
+        });
+
+        const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 0, draftIds: [] });
+        const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
+
+        await executeCampaignTickRun({
+          db,
+          clock: { now: () => pastDeadline },
+          ai: { finalizeLeadMs } as any,
+          reconcile,
+          reconcileSends,
+        });
+
+        // Campaign reached SCHEDULED
+        expect(db._state.campaigns.get("c1").status).toBe("SCHEDULED");
+
+        // d1 resolved to FALLBACK with GENERATION_INCOMPLETE_AT_DEADLINE, then QUEUED with EmailJob
+        const d1 = db._state.drafts.get("d1");
+        expect(d1.fallbackReason).toBe("GENERATION_INCOMPLETE_AT_DEADLINE");
+        expect(d1.status).toBe("QUEUED");
+        expect(d1.emailJobId).toBeTruthy();
+
+        // d2 resolved to FALLBACK with UNRESOLVED_AT_DEADLINE, then QUEUED with EmailJob
+        const d2 = db._state.drafts.get("d2");
+        expect(d2.fallbackReason).toBe("UNRESOLVED_AT_DEADLINE");
+        expect(d2.status).toBe("QUEUED");
+        expect(d2.emailJobId).toBeTruthy();
+
+        // d3 QUEUED with EmailJob
+        const d3 = db._state.drafts.get("d3");
+        expect(d3.status).toBe("QUEUED");
+        expect(d3.emailJobId).toBeTruthy();
+
+        // All 3 drafts got EmailJobs created
+        expect(db._state.emailJobs.size).toBe(3);
+      });
+
+      it("GENERATING campaign with stuck and flagged drafts reaches SCHEDULED at deadline under HOLD (only non-held drafts get EmailJobs)", async () => {
+        const db = createFakeDb({
+          campaigns: [
+            {
+              id: "c1",
+              status: "GENERATING",
+              scheduledAt,
+              onUnresolved: "HOLD",
+              promptFingerprint: "fp1",
+              subjectTemplate: "Hello {{first_name}}",
+              bodyTemplate: "{{ai_intro}}\nWelcome!",
+              linkUrl: "https://example.com",
+              unsubscribeUrl: "https://example.com/unsub",
+              userId: "user-1",
+            },
+          ],
+          recipients: [
+            { id: "r1", campaignId: "c1", firstName: "Alice", email: "alice@example.com" },
+            { id: "r2", campaignId: "c1", firstName: "Bob", email: "bob@example.com" },
+            { id: "r3", campaignId: "c1", firstName: "Charlie", email: "charlie@example.com" },
+          ],
+          drafts: [
+            { id: "d1", campaignId: "c1", recipientId: "r1", status: "PENDING", promptVersion: "fp1", emailJobId: null },
+            { id: "d2", campaignId: "c1", recipientId: "r2", status: "FLAGGED", promptVersion: "fp1", emailJobId: null, flagReasons: [{ code: "TONE" }] },
+            { id: "d3", campaignId: "c1", recipientId: "r3", status: "READY", promptVersion: "fp1", emailJobId: null, subject: "Sub", body: "Body" },
+          ],
+        });
+
+        const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 0, draftIds: [] });
+        const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
+
+        await executeCampaignTickRun({
+          db,
+          clock: { now: () => pastDeadline },
+          ai: { finalizeLeadMs } as any,
+          reconcile,
+          reconcileSends,
+        });
+
+        // Campaign reached SCHEDULED
+        expect(db._state.campaigns.get("c1").status).toBe("SCHEDULED");
+
+        // d1 resolved to HELD, does NOT have emailJobId
+        const d1 = db._state.drafts.get("d1");
+        expect(d1.status).toBe("HELD");
+        expect(d1.emailJobId).toBeNull();
+
+        // d2 resolved to HELD, does NOT have emailJobId
+        const d2 = db._state.drafts.get("d2");
+        expect(d2.status).toBe("HELD");
+        expect(d2.emailJobId).toBeNull();
+
+        // Only d3 (non-held draft) got an EmailJob and moved to QUEUED
+        const d3 = db._state.drafts.get("d3");
+        expect(d3.status).toBe("QUEUED");
+        expect(d3.emailJobId).toBeTruthy();
+
+        // Exactly 1 EmailJob was created (for d3)
+        expect(db._state.emailJobs.size).toBe(1);
+      });
     });
   });
 

@@ -10,7 +10,7 @@ import { PROMPT_VERSION } from "../ai/prompts/personalize.v2";
 import type { LlmLimiter } from "../ai/rateLimit/llmLimiter";
 import type { GenerateDeps } from "../queue/generateWorker";
 import type { GenerateJobData } from "../queue/generateJob";
-import { startSampling, approveSamples, refreshCampaign } from "./flow";
+import { startSampling, approveSamples, refreshCampaign, scheduleCampaign } from "./flow";
 import {
   pauseCampaign,
   resumeCampaign,
@@ -18,6 +18,8 @@ import {
   CancelNotSupportedYetError,
   IdentityMismatchError,
 } from "./control";
+import { reconcileSends } from "./reconcile";
+import { emailQueue } from "../queue/queue";
 import { IllegalTransitionError } from "./stateMachine";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -366,7 +368,7 @@ suite("campaign control (integration)", () => {
     expect(campAfter.llmModel).toBe("mock-model");
   });
 
-  it("cancelCampaign transitions allowed statuses to CANCELLED and rejects SCHEDULED", async () => {
+  it("cancelCampaign transitions allowed statuses to CANCELLED", async () => {
     const campaignId = await createDraftCampaign(1);
 
     // From DRAFT -> CANCELLED
@@ -378,25 +380,138 @@ suite("campaign control (integration)", () => {
 
     // From CANCELLED -> throws IllegalTransitionError
     await expect(cancelCampaign(campaignId, { db: prisma })).rejects.toThrow(IllegalTransitionError);
+  });
 
-    // Test SCHEDULED campaign
-    const scheduledCamp = await prisma.campaign.create({
-      data: {
-        userId: "integration@example.com",
-        name: "Scheduled Campaign",
-        subjectTemplate: "Hi",
-        bodyTemplate: "Hi",
-        templateHash: `hash-${randomUUID()}`,
-        linkUrl: "https://example.com/demo",
-        unsubscribeUrl: "https://example.com/unsubscribe",
-        status: "SCHEDULED",
-        scheduledAt: new Date(Date.now() + 3_600_000),
-      },
+  it("cancel from SCHEDULED and SENDING: deletes pending/rate_limited rows, keeps sent rows, sets drafts to HELD, removes queue jobs, and reconcileSends re-adds nothing", async () => {
+    const ai = aiConfig({ SAMPLE_SIZE: "3" });
+    const campaignId = await createDraftCampaign(3);
+
+    // Sample and resolve drafts
+    await startSampling(campaignId, { db: prisma, ai });
+    const drafts = await prisma.generatedDraft.findMany({ where: { campaignId } });
+    for (const d of drafts) {
+      await prisma.generatedDraft.update({
+        where: { id: d.id },
+        data: { status: "READY", subject: "Sub", body: "Body" },
+      });
+    }
+
+    // Move to GENERATING and schedule
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: "GENERATING" },
     });
-    campaignIds.push(scheduledCamp.id);
 
-    const cancelScheduledErr = await cancelCampaign(scheduledCamp.id, { db: prisma }).catch((e) => e);
-    expect(cancelScheduledErr).toBeInstanceOf(CancelNotSupportedYetError);
-    expect((cancelScheduledErr as CancelNotSupportedYetError).code).toBe("CANCEL_NOT_SUPPORTED_YET");
+    await scheduleCampaign(campaignId, "GENERATING", { db: prisma, ai });
+
+    const campScheduled = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(campScheduled.status).toBe("SCHEDULED");
+
+    const emailJobs = await prisma.emailJob.findMany({
+      where: { generatedDraft: { campaignId } },
+      orderBy: { id: "asc" },
+    });
+    expect(emailJobs).toHaveLength(3);
+
+    // Set job 0: pending, job 1: rate_limited, job 2: sent
+    await prisma.emailJob.update({
+      where: { id: emailJobs[1].id },
+      data: { status: "rate_limited" },
+    });
+    await prisma.emailJob.update({
+      where: { id: emailJobs[2].id },
+      data: { status: "sent", sentAt: new Date() },
+    });
+
+    // Verify BullMQ jobs exist in emailQueue
+    expect(await emailQueue.getJob(emailJobs[0].id)).toBeDefined();
+    expect(await emailQueue.getJob(emailJobs[1].id)).toBeDefined();
+    expect(await emailQueue.getJob(emailJobs[2].id)).toBeDefined();
+
+    // Cancel from SCHEDULED
+    const cancelRes = await cancelCampaign(campaignId, { db: prisma });
+    expect(cancelRes.ok).toBe(true);
+
+    // Campaign is CANCELLED
+    const cancelledCamp = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(cancelledCamp.status).toBe("CANCELLED");
+
+    // Pending and rate_limited rows are deleted
+    expect(await prisma.emailJob.findUnique({ where: { id: emailJobs[0].id } })).toBeNull();
+    expect(await prisma.emailJob.findUnique({ where: { id: emailJobs[1].id } })).toBeNull();
+
+    // Sent row is kept
+    const keptJob = await prisma.emailJob.findUnique({ where: { id: emailJobs[2].id } });
+    expect(keptJob).not.toBeNull();
+    expect(keptJob?.status).toBe("sent");
+
+    // Drafts for deleted jobs are HELD and emailJobId is null (via SetNull)
+    const draft0 = await prisma.generatedDraft.findFirstOrThrow({ where: { recipientId: (await prisma.recipient.findMany({ where: { campaignId } }))[0].id } });
+    const draft1 = await prisma.generatedDraft.findFirstOrThrow({ where: { recipientId: (await prisma.recipient.findMany({ where: { campaignId } }))[1].id } });
+    const draft2 = await prisma.generatedDraft.findFirstOrThrow({ where: { recipientId: (await prisma.recipient.findMany({ where: { campaignId } }))[2].id } });
+
+    // The two deleted jobs had drafts moved to HELD
+    const heldDrafts = await prisma.generatedDraft.findMany({
+      where: { campaignId, status: "HELD" },
+    });
+    expect(heldDrafts).toHaveLength(2);
+    for (const hd of heldDrafts) {
+      expect(hd.emailJobId).toBeNull();
+    }
+
+    // The sent draft was not touched
+    const sentDraft = await prisma.generatedDraft.findUniqueOrThrow({ where: { emailJobId: emailJobs[2].id } });
+    expect(sentDraft.status).toBe("QUEUED");
+
+    // BullMQ jobs for deleted jobs are removed
+    expect(await emailQueue.getJob(emailJobs[0].id)).toBeFalsy();
+    expect(await emailQueue.getJob(emailJobs[1].id)).toBeFalsy();
+
+    // Clean up sent job from queue
+    const queueJob2 = await emailQueue.getJob(emailJobs[2].id);
+    await queueJob2?.remove();
+
+    // A following reconcileSends run re-adds nothing
+    const reconcileOutcome = await reconcileSends(campaignId, { db: prisma });
+    expect(reconcileOutcome.reconciledCount).toBe(0);
+    expect(reconcileOutcome.jobIds).toEqual([]);
+
+    // Now test cancel from SENDING as well
+    const campSendingId = await createDraftCampaign(1);
+    await startSampling(campSendingId, { db: prisma, ai });
+    const draftSending = await prisma.generatedDraft.findFirstOrThrow({ where: { campaignId: campSendingId } });
+    await prisma.generatedDraft.update({
+      where: { id: draftSending.id },
+      data: { status: "READY", subject: "Sub", body: "Body" },
+    });
+    await prisma.campaign.update({
+      where: { id: campSendingId },
+      data: { status: "GENERATING" },
+    });
+    await scheduleCampaign(campSendingId, "GENERATING", { db: prisma, ai });
+    await prisma.campaign.update({
+      where: { id: campSendingId },
+      data: { status: "SENDING" },
+    });
+
+    const sendingEmailJob = await prisma.emailJob.findFirstOrThrow({
+      where: { generatedDraft: { campaignId: campSendingId } },
+    });
+    expect(await emailQueue.getJob(sendingEmailJob.id)).toBeDefined();
+
+    const cancelSendingRes = await cancelCampaign(campSendingId, { db: prisma });
+    expect(cancelSendingRes.ok).toBe(true);
+
+    const cancelledSendingCamp = await prisma.campaign.findUniqueOrThrow({ where: { id: campSendingId } });
+    expect(cancelledSendingCamp.status).toBe("CANCELLED");
+    expect(await prisma.emailJob.findUnique({ where: { id: sendingEmailJob.id } })).toBeNull();
+    expect(await emailQueue.getJob(sendingEmailJob.id)).toBeFalsy();
+
+    const draftSendingAfter = await prisma.generatedDraft.findUniqueOrThrow({ where: { id: draftSending.id } });
+    expect(draftSendingAfter.status).toBe("HELD");
+    expect(draftSendingAfter.emailJobId).toBeNull();
+
+    const reconcileOutcome2 = await reconcileSends(campSendingId, { db: prisma });
+    expect(reconcileOutcome2.reconciledCount).toBe(0);
   });
 });

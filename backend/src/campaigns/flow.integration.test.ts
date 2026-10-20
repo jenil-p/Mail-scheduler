@@ -26,6 +26,7 @@ import { emailQueue } from "../queue/queue";
 import { IllegalTransitionError } from "./stateMachine";
 import { executeCampaignTickRun } from "./tick";
 import { createDailyUsageGetter } from "./budget";
+import { getCampaignSummary } from "./drafts";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const testRedisHost = process.env.TEST_REDIS_HOST;
@@ -823,6 +824,99 @@ suite("campaign review flow (integration)", () => {
       expect(await emailQueue.getJob(emailJobs[1].id)).toBeFalsy();
       expect(await emailQueue.getJob(emailJobs[2].id)).toBeFalsy();
       expect(await emailQueue.getJob(emailJobs[3].id)).toBeFalsy();
+    });
+  });
+
+  describe("SCHEDULED -> SENDING -> COMPLETED (Phase 6b integration)", () => {
+    it("progresses SCHEDULED -> SENDING -> COMPLETED with injected clock and EmailJob rows set to sent or failed", async () => {
+      const scheduledAt = new Date("2026-10-20T12:00:00Z");
+      const ai = aiConfig({ SAMPLE_SIZE: "2" });
+      const campaignId = await createDraftCampaign({ recipientsCount: 2, allHaveData: true });
+
+      // Start sampling and resolve all drafts
+      await startSampling(campaignId, { db: prisma, ai });
+      const drafts = await prisma.generatedDraft.findMany({ where: { campaignId } });
+      for (const d of drafts) {
+        await prisma.generatedDraft.update({
+          where: { id: d.id },
+          data: { status: "READY", subject: "S", body: "B" },
+        });
+      }
+
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: "GENERATING", scheduledAt },
+      });
+
+      // Schedule campaign
+      await scheduleCampaign(campaignId, "GENERATING", { db: prisma, ai });
+
+      const scheduledCamp = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+      expect(scheduledCamp.status).toBe("SCHEDULED");
+
+      // 1. Clock before scheduledAt: does not advance
+      const clockBefore = { now: () => new Date("2026-10-20T11:59:59Z") };
+      const outcomeBefore = await refreshCampaign(campaignId, { db: prisma, clock: clockBefore });
+      expect(outcomeBefore.refreshed).toBe(false);
+
+      // 2. Clock at or after scheduledAt: advances to SENDING
+      const clockAt = { now: () => new Date("2026-10-20T12:00:00Z") };
+      const outcomeAt = await refreshCampaign(campaignId, { db: prisma, clock: clockAt });
+      expect(outcomeAt).toEqual({
+        refreshed: true,
+        from: "SCHEDULED",
+        to: "SENDING",
+      });
+
+      const sendingCamp = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+      expect(sendingCamp.status).toBe("SENDING");
+
+      // 3. While jobs are still pending: does not advance to COMPLETED
+      const outcomeSending = await refreshCampaign(campaignId, { db: prisma, clock: clockAt });
+      expect(outcomeSending.refreshed).toBe(false);
+
+      const emailJobs = await prisma.emailJob.findMany({
+        where: { generatedDraft: { campaignId } },
+      });
+      expect(emailJobs).toHaveLength(2);
+
+      // 4. Update one EmailJob to sent and one to failed
+      await prisma.emailJob.update({
+        where: { id: emailJobs[0].id },
+        data: { status: "sent", sentAt: new Date() },
+      });
+      await prisma.emailJob.update({
+        where: { id: emailJobs[1].id },
+        data: { status: "failed", errorMessage: "SMTP bounce" },
+      });
+
+      // Clean up queue jobs
+      for (const j of emailJobs) {
+        const queueJob = await emailQueue.getJob(j.id);
+        await queueJob?.remove();
+      }
+
+      // 5. Clock advances and refresh: advances SENDING -> COMPLETED
+      const clockAfter = { now: () => new Date("2026-10-20T12:05:00Z") };
+      const outcomeCompleted = await refreshCampaign(campaignId, { db: prisma, clock: clockAfter });
+      expect(outcomeCompleted).toEqual({
+        refreshed: true,
+        from: "SENDING",
+        to: "COMPLETED",
+      });
+
+      const completedCamp = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+      expect(completedCamp.status).toBe("COMPLETED");
+
+      // Verify getCampaignSummary returns correct sendCounts
+      const summary = await getCampaignSummary(campaignId, { db: prisma });
+      expect(summary.status).toBe("COMPLETED");
+      expect(summary.sendCounts).toEqual({
+        pending: 0,
+        rate_limited: 0,
+        sent: 1,
+        failed: 1,
+      });
     });
   });
 });
