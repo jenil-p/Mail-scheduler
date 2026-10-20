@@ -16,6 +16,7 @@ import type { AiConfig } from "../config/ai";
 import { config } from "../config";
 import { getGenerateQueue, generateJobOptions, GENERATE_JOB_NAME } from "../queue/generateQueue";
 import type { GenerateJobData } from "../queue/generateJob";
+import { enqueueSendJob } from "../queue/sendJobs";
 
 export const LIVE_JOB_STATES = new Set([
   "waiting",
@@ -188,19 +189,10 @@ export async function reconcileSends(
     const scheduledAtMs = job.scheduledAt ? new Date(job.scheduledAt).getTime() : now;
     const delayMs = Math.max(0, scheduledAtMs - now);
 
-    await addJob(
-      "email-job",
-      {
-        jobId: job.id,
-        recipientEmail: job.recipientEmail,
-        subject: job.subject,
-        body: job.body,
-        senderEmail: job.senderEmail,
-      },
-      {
-        delay: delayMs,
-        jobId: job.id,
-      }
+    await enqueueSendJob(
+      job,
+      { delayMs },
+      { addJob }
     );
 
     reconciledJobIds.push(job.id);

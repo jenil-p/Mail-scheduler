@@ -127,6 +127,7 @@ export const aiConfigSchema = z
     campaignSenderEmail: blankAsUnset(
       z.string().min(1).default("Sendly Scheduler <scheduler@sendly.local>")
     ),
+    campaignDelayBetweenEmailsMs: envInt(2_000, { min: 0, max: 86_400_000 }),
   })
   .superRefine((value, ctx) => {
     // Provider-independent rules first: they must hold for `mock` too.
@@ -213,6 +214,7 @@ export const AI_CONFIG_ENV_KEYS = {
   instructionMaxLength: "AI_INSTRUCTION_MAX_LENGTH",
   campaignTickMs: "CAMPAIGN_TICK_MS",
   campaignSenderEmail: "CAMPAIGN_SENDER_EMAIL",
+  campaignDelayBetweenEmailsMs: "CAMPAIGN_DELAY_BETWEEN_EMAILS_MS",
 } as const satisfies Record<keyof AiConfig, string>;
 
 /**
@@ -249,6 +251,7 @@ export function parseAiConfig(env: Record<string, string | undefined>): AiConfig
     instructionMaxLength: env.AI_INSTRUCTION_MAX_LENGTH,
     campaignTickMs: env.CAMPAIGN_TICK_MS,
     campaignSenderEmail: env.CAMPAIGN_SENDER_EMAIL,
+    campaignDelayBetweenEmailsMs: env.CAMPAIGN_DELAY_BETWEEN_EMAILS_MS,
   });
 
   if (!result.success) {

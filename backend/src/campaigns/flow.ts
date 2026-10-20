@@ -27,6 +27,7 @@ import { transition, IllegalTransitionError } from "./stateMachine";
 import { renderCampaignEmail } from "./values";
 import { getGenerateQueue } from "../queue/generateQueue";
 import { ensureGenerateJob } from "./reconcile";
+import { enqueueSendJob } from "../queue/sendJobs";
 
 export function liveLlmIdentity(ai: AiConfig = config.ai): FlowLiveIdentity {
   return {
@@ -494,6 +495,24 @@ async function queueDraftsForSend(
     include: {
       recipient: true,
     },
+    orderBy: [
+      { recipient: { createdAt: "asc" } },
+      { recipient: { id: "asc" } },
+    ],
+  });
+
+  drafts.sort((a: any, b: any) => {
+    const aTime = a.recipient?.createdAt ? new Date(a.recipient.createdAt).getTime() : 0;
+    const bTime = b.recipient?.createdAt ? new Date(b.recipient.createdAt).getTime() : 0;
+    if (aTime !== bTime) {
+      return aTime - bTime;
+    }
+    const aRecId = a.recipient?.id ?? "";
+    const bRecId = b.recipient?.id ?? "";
+    if (aRecId !== bRecId) {
+      return aRecId < bRecId ? -1 : 1;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 
   const createdJobs: CreatedEmailJobInfo[] = [];
@@ -545,36 +564,20 @@ async function enqueueSendJobs(
 ): Promise<void> {
   const now = (deps.clock?.now() ?? new Date()).getTime();
   const logger = deps.logger ?? console;
+  const delayBetweenEmailsMs =
+    deps.ai?.campaignDelayBetweenEmailsMs ?? config.ai.campaignDelayBetweenEmailsMs;
 
-  for (const job of jobs) {
+  for (let i = 0; i < jobs.length; i++) {
+    const job = jobs[i];
     const scheduledAtMs = job.scheduledAt ? new Date(job.scheduledAt).getTime() : now;
-    const delayMs = Math.max(0, scheduledAtMs - now);
+    const baseDelay = Math.max(0, scheduledAtMs - now);
+    const delayMs = baseDelay + i * delayBetweenEmailsMs;
     try {
-      if (deps.addSendJob) {
-        await deps.addSendJob(
-          {
-            jobId: job.id,
-            recipientEmail: job.recipientEmail,
-            subject: job.subject,
-            body: job.body,
-            senderEmail: job.senderEmail,
-          },
-          { delay: delayMs, jobId: job.id }
-        );
-      } else {
-        const { emailQueue } = await import("../queue/queue");
-        await emailQueue.add(
-          "email-job",
-          {
-            jobId: job.id,
-            recipientEmail: job.recipientEmail,
-            subject: job.subject,
-            body: job.body,
-            senderEmail: job.senderEmail,
-          },
-          { delay: delayMs, jobId: job.id }
-        );
-      }
+      await enqueueSendJob(
+        job,
+        { delayMs },
+        { addSendJob: deps.addSendJob }
+      );
     } catch (err: unknown) {
       const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
       logger.error(`[Flow] send enqueue failed: ${errClass}`);

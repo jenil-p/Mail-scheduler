@@ -6,6 +6,7 @@ import { config } from "../config";
 import type { PrismaClient } from "../generated/prisma/client";
 import scheduleRoutes from "./schedule";
 import { emailQueue } from "../queue/queue";
+import { enqueueSendJob } from "../queue/sendJobs";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const testRedisHost = process.env.TEST_REDIS_HOST;
@@ -93,5 +94,27 @@ suite("POST /api/schedule path (integration)", () => {
       body: "<p>Original Body</p>",
       senderEmail: "Sendly Scheduler <scheduler@sendly.local>",
     });
+
+    // Verify enqueueSendJob creates a BullMQ job with identical name and opts (ignoring delay and jobId)
+    const enqueueJobId = "00000000-0000-4000-8000-000000000099";
+    await enqueueSendJob(
+      {
+        id: enqueueJobId,
+        recipientEmail: "recipient-existing@example.com",
+        subject: "Hello from Existing Path",
+        body: "<p>Original Body</p>",
+        senderEmail: "Sendly Scheduler <scheduler@sendly.local>",
+      },
+      { delayMs: 5000 }
+    );
+    createdJobIds.push(enqueueJobId);
+
+    const enqueueBullJob = await emailQueue.getJob(enqueueJobId);
+    expect(enqueueBullJob).toBeDefined();
+    expect(enqueueBullJob?.name).toBe(queueJob?.name);
+
+    const { delay: _d1, jobId: _j1, ...scheduleOpts } = queueJob!.opts;
+    const { delay: _d2, jobId: _j2, ...enqueueOpts } = enqueueBullJob!.opts;
+    expect(enqueueOpts).toEqual(scheduleOpts);
   });
 });

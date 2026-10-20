@@ -39,8 +39,9 @@ describe("parseAiConfig", () => {
       // Phase 5a: campaign state machine and tick interval
       instructionMaxLength: 500,
       campaignTickMs: 15_000,
-      // Phase 6a: campaign send path default sender email
+      // Phase 6a: campaign send path default sender email and email staggering delay
       campaignSenderEmail: "Sendly Scheduler <scheduler@sendly.local>",
+      campaignDelayBetweenEmailsMs: 2_000,
     });
   });
 
@@ -62,6 +63,20 @@ describe("parseAiConfig", () => {
     expect(
       parseAiConfig({ CAMPAIGN_SENDER_EMAIL: "custom@example.com" }).campaignSenderEmail
     ).toBe("custom@example.com");
+  });
+
+  it("accepts a custom campaign email staggering delay", () => {
+    expect(
+      parseAiConfig({ CAMPAIGN_DELAY_BETWEEN_EMAILS_MS: "3000" })
+        .campaignDelayBetweenEmailsMs
+    ).toBe(3000);
+    expect(
+      parseAiConfig({ CAMPAIGN_DELAY_BETWEEN_EMAILS_MS: "0" })
+        .campaignDelayBetweenEmailsMs
+    ).toBe(0);
+    expect(() =>
+      parseAiConfig({ CAMPAIGN_DELAY_BETWEEN_EMAILS_MS: "-1" })
+    ).toThrowError(/CAMPAIGN_DELAY_BETWEEN_EMAILS_MS/);
   });
 
   it("leaves the daily request limit unset for the mock provider (no invented quota)", () => {

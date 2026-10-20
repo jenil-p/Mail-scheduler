@@ -1066,6 +1066,58 @@ describe("flow", () => {
       expect(addSendJob).toHaveBeenCalledTimes(1);
     });
 
+    it("staggers email delays by CAMPAIGN_DELAY_BETWEEN_EMAILS_MS ordering by recipient createdAt then id", async () => {
+      const fingerprint = "fp1";
+      const scheduledAt = new Date("2026-11-01T10:00:00Z");
+      const clock = { now: () => new Date("2026-11-01T09:00:00Z") }; // 3600_000 ms before scheduledAt
+      const baseDelay = 3600_000;
+
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            userId: "owner@example.com",
+            status: "GENERATING",
+            promptFingerprint: fingerprint,
+            scheduledAt,
+          },
+        ],
+        recipients: [
+          { id: "r-c", campaignId: "c1", email: "rc@example.com", createdAt: new Date("2026-10-01T12:00:00Z") },
+          { id: "r-a", campaignId: "c1", email: "ra@example.com", createdAt: new Date("2026-10-01T10:00:00Z") },
+          { id: "r-b", campaignId: "c1", email: "rb@example.com", createdAt: new Date("2026-10-01T10:00:00Z") },
+        ],
+        drafts: [
+          { id: "d-c", campaignId: "c1", recipientId: "r-c", promptVersion: fingerprint, status: "READY", subject: "S-C", body: "B-C" },
+          { id: "d-a", campaignId: "c1", recipientId: "r-a", promptVersion: fingerprint, status: "READY", subject: "S-A", body: "B-A" },
+          { id: "d-b", campaignId: "c1", recipientId: "r-b", promptVersion: fingerprint, status: "READY", subject: "S-B", body: "B-B" },
+        ],
+      });
+
+      const sendJobs: any[] = [];
+      const addSendJob = vi.fn(async (job, opts) => {
+        sendJobs.push({ job, opts });
+      });
+
+      const moved = await scheduleCampaign("c1", "GENERATING", {
+        db,
+        clock,
+        addSendJob,
+        ai: { campaignDelayBetweenEmailsMs: 2500 } as any,
+      });
+      expect(moved).toBe(true);
+
+      expect(sendJobs).toHaveLength(3);
+      expect(sendJobs[0].job.recipientEmail).toBe("ra@example.com");
+      expect(sendJobs[0].opts.delay).toBe(baseDelay);
+
+      expect(sendJobs[1].job.recipientEmail).toBe("rb@example.com");
+      expect(sendJobs[1].opts.delay).toBe(baseDelay + 2500);
+
+      expect(sendJobs[2].job.recipientEmail).toBe("rc@example.com");
+      expect(sendJobs[2].opts.delay).toBe(baseDelay + 5000);
+    });
+
     it("two concurrent scheduleCampaign calls create each EmailJob once", async () => {
       const fingerprint = "fp1";
       const db = createFakeDb({
