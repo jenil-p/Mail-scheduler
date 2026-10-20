@@ -1,12 +1,14 @@
 /**
- * Background campaign tick (spec Phase 5a).
+ * Background campaign tick (spec Phase 5a / 6b).
  *
  * Runs once at start, then every CAMPAIGN_TICK_MS using a setTimeout chain (not setInterval).
  * A running flag ensures runs never overlap. Timers are unref'd so they do not keep the process alive.
  *
  * Each run:
  * 1. `reconcileGeneration()` for active campaigns in SAMPLING or GENERATING.
- * 2. `refreshCampaign()` for every campaign in SAMPLING, GENERATING or EXCEPTION_REVIEW.
+ * 2. `enforceDeadlines()` for campaigns past scheduledAt - finalizeLeadMs.
+ * 3. `refreshCampaign()` for every campaign in SAMPLING, GENERATING, EXCEPTION_REVIEW, SCHEDULED, or SENDING.
+ * 4. `reconcileSends()` for SCHEDULED and SENDING campaigns.
  *
  * Failure resilience:
  * - One campaign failing never stops the others.
@@ -16,6 +18,7 @@
  */
 
 import type { PrismaClient, CampaignStatus } from "../generated/prisma/client";
+import type { AiConfig } from "../config/ai";
 import { config } from "../config";
 import {
   reconcileGeneration,
@@ -26,6 +29,11 @@ import {
   type ReconcileSendsResult,
 } from "./reconcile";
 import { refreshCampaign, type FlowDeps } from "./flow";
+import {
+  enforceDeadlines,
+  type EnforceDeadlinesDeps,
+  type EnforceDeadlinesResult,
+} from "./deadlines";
 
 export interface CampaignTickOptions {
   intervalMs?: number;
@@ -33,14 +41,17 @@ export interface CampaignTickOptions {
 
 export interface CampaignTickDeps {
   db?: PrismaClient;
+  clock?: { now: () => Date };
+  ai?: AiConfig;
   reconcile?: (campaignId?: string, deps?: ReconcileGenerationDeps) => Promise<ReconcileGenerationResult>;
   reconcileSends?: (campaignId?: string, deps?: ReconcileSendsDeps) => Promise<ReconcileSendsResult>;
   refresh?: (
     campaignId: string,
     deps?: FlowDeps
   ) => Promise<{ refreshed: boolean; from?: CampaignStatus; to?: CampaignStatus }>;
+  enforceDeadlines?: (deps?: EnforceDeadlinesDeps) => Promise<EnforceDeadlinesResult>;
   logger?: {
-    info: (message: string) => void;
+    info?: (message: string) => void;
     error: (message: string) => void;
   };
 }
@@ -48,7 +59,9 @@ export interface CampaignTickDeps {
 /**
  * Execute a single iteration of the campaign tick:
  * 1. Reconcile generation jobs for SAMPLING/GENERATING campaigns.
- * 2. Refresh each campaign in SAMPLING, GENERATING, or EXCEPTION_REVIEW.
+ * 2. Enforce deadlines for campaigns past scheduledAt - finalizeLeadMs.
+ * 3. Refresh each campaign in SAMPLING, GENERATING, EXCEPTION_REVIEW, SCHEDULED, or SENDING.
+ * 4. Reconcile send jobs for SCHEDULED and SENDING campaigns.
  *
  * Isolated and resilient: an error in one campaign does not abort the loop.
  */
@@ -62,19 +75,39 @@ export async function executeCampaignTickRun(deps: CampaignTickDeps = {}): Promi
   try {
     const outcome = await reconcile(undefined, { db });
     if (outcome.reconciledCount > 0) {
-      logger.info(`[CampaignTick] Reconciled ${outcome.reconciledCount} generation drafts`);
+      logger.info?.(`[CampaignTick] Reconciled ${outcome.reconciledCount} generation drafts`);
     }
   } catch (err: unknown) {
     const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
     logger.error(`[CampaignTick] Reconcile error: ${errClass}`);
   }
 
-  // 2. Query campaigns in SAMPLING, GENERATING, or EXCEPTION_REVIEW
+  // 2. Enforce deadlines BEFORE refreshCampaign
+  try {
+    const enforceDeadlinesFn = deps.enforceDeadlines ?? enforceDeadlines;
+    const outcome = await enforceDeadlinesFn({
+      db,
+      clock: deps.clock,
+      ai: deps.ai,
+      logger,
+      refresh,
+    });
+    if (outcome.processedCampaigns > 0) {
+      logger.info?.(
+        `[CampaignTick] Enforced deadlines for ${outcome.processedCampaigns} campaigns (${outcome.cancelledCampaigns} cancelled, ${outcome.resolvedDrafts} drafts resolved)`
+      );
+    }
+  } catch (err: unknown) {
+    const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+    logger.error(`[CampaignTick] Enforce deadlines error: ${errClass}`);
+  }
+
+  // 3. Query campaigns in SAMPLING, GENERATING, EXCEPTION_REVIEW, SCHEDULED, or SENDING
   let activeCampaigns: { id: string; status: CampaignStatus }[] = [];
   try {
     activeCampaigns = await db.campaign.findMany({
       where: {
-        status: { in: ["SAMPLING", "GENERATING", "EXCEPTION_REVIEW"] },
+        status: { in: ["SAMPLING", "GENERATING", "EXCEPTION_REVIEW", "SCHEDULED", "SENDING"] },
       },
       select: { id: true, status: true },
     });
@@ -86,9 +119,14 @@ export async function executeCampaignTickRun(deps: CampaignTickDeps = {}): Promi
 
   for (const campaign of activeCampaigns) {
     try {
-      const outcome = await refresh(campaign.id, { db });
+      const outcome = await refresh(campaign.id, {
+        db,
+        clock: deps.clock,
+        ai: deps.ai,
+        logger,
+      });
       if (outcome.refreshed) {
-        logger.info(
+        logger.info?.(
           `[CampaignTick] Campaign ${campaign.id} moved: ${outcome.from} -> ${outcome.to}`
         );
       }
@@ -98,12 +136,17 @@ export async function executeCampaignTickRun(deps: CampaignTickDeps = {}): Promi
     }
   }
 
-  // 3. Reconcile send jobs for SCHEDULED and SENDING campaigns
+  // 4. Reconcile send jobs for SCHEDULED and SENDING campaigns
   try {
     const reconcileSendsFn = deps.reconcileSends ?? reconcileSends;
-    const outcome = await reconcileSendsFn(undefined, { db });
+    const outcome = await reconcileSendsFn(undefined, {
+      db,
+      clock: deps.clock,
+      ai: deps.ai,
+      logger,
+    });
     if (outcome.reconciledCount > 0) {
-      logger.info(`[CampaignTick] Reconciled ${outcome.reconciledCount} send jobs`);
+      logger.info?.(`[CampaignTick] Reconciled ${outcome.reconciledCount} send jobs`);
     }
   } catch (err: unknown) {
     const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";

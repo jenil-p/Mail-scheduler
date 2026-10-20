@@ -23,6 +23,7 @@ describe("tick", () => {
       } as any;
 
       const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 2, draftIds: ["d1", "d2"] });
+      const enforceDeadlines = vi.fn().mockResolvedValue({ processedCampaigns: 0, cancelledCampaigns: 0, resolvedDrafts: 0 });
       const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
       const refresh = vi.fn().mockResolvedValue({ refreshed: true, from: "SAMPLING", to: "SAMPLE_REVIEW" });
       const logger = {
@@ -30,21 +31,47 @@ describe("tick", () => {
         error: vi.fn(),
       };
 
-      await executeCampaignTickRun({ db, reconcile, reconcileSends, refresh, logger });
+      await executeCampaignTickRun({ db, reconcile, enforceDeadlines, reconcileSends, refresh, logger });
 
       expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(enforceDeadlines).toHaveBeenCalledTimes(1);
       expect(reconcileSends).toHaveBeenCalledTimes(1);
       expect(db.campaign.findMany).toHaveBeenCalledWith({
-        where: { status: { in: ["SAMPLING", "GENERATING", "EXCEPTION_REVIEW"] } },
+        where: { status: { in: ["SAMPLING", "GENERATING", "EXCEPTION_REVIEW", "SCHEDULED", "SENDING"] } },
         select: { id: true, status: true },
       });
       expect(refresh).toHaveBeenCalledTimes(3);
-      expect(refresh).toHaveBeenCalledWith("c1", { db });
-      expect(refresh).toHaveBeenCalledWith("c2", { db });
-      expect(refresh).toHaveBeenCalledWith("c3", { db });
+      expect(refresh).toHaveBeenCalledWith("c1", expect.objectContaining({ db }));
+      expect(refresh).toHaveBeenCalledWith("c2", expect.objectContaining({ db }));
+      expect(refresh).toHaveBeenCalledWith("c3", expect.objectContaining({ db }));
 
       // Verifies info logs contain counts and transition names
       expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("2 generation drafts"));
+    });
+
+    it("calls enforceDeadlines before refreshCampaign during the tick", async () => {
+      const order: string[] = [];
+      const db = {
+        campaign: {
+          findMany: vi.fn().mockResolvedValue([{ id: "c1", status: "SAMPLING" }]),
+        },
+      } as any;
+      const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 0, draftIds: [] });
+      const enforceDeadlines = vi.fn().mockImplementation(async () => {
+        order.push("enforceDeadlines");
+        return { processedCampaigns: 1, cancelledCampaigns: 0, resolvedDrafts: 0 };
+      });
+      const refresh = vi.fn().mockImplementation(async () => {
+        order.push("refresh");
+        return { refreshed: false };
+      });
+      const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
+      const logger = { info: vi.fn(), error: vi.fn() };
+
+      await executeCampaignTickRun({ db, reconcile, enforceDeadlines, refresh, reconcileSends, logger });
+
+      expect(order).toEqual(["enforceDeadlines", "refresh"]);
+      expect(enforceDeadlines).toHaveBeenCalledTimes(1);
     });
 
     it("calls reconcileSends during the tick", async () => {
@@ -124,7 +151,7 @@ describe("tick", () => {
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringMatching(/\[CampaignTick\] Reconcile error: DatabaseTimeoutError/)
       );
-      expect(refresh).toHaveBeenCalledWith("c1", { db });
+      expect(refresh).toHaveBeenCalledWith("c1", expect.objectContaining({ db }));
     });
   });
 
