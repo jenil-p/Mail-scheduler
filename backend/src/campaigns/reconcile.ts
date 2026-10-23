@@ -230,13 +230,16 @@ export async function reconcileSends(
     },
   });
 
+  let finishedExistingJobsCount = 0;
+
   for (const job of pendingJobs) {
     const existingJob = await getJob(job.id);
-    const state = existingJob ? await existingJob.getState() : undefined;
 
-    if (state === "completed" || state === "failed") {
-      await existingJob!.remove();
-    } else if (state && LIVE_JOB_STATES.has(state)) {
+    if (existingJob) {
+      const state = await existingJob.getState();
+      if (state === "completed" || state === "failed") {
+        finishedExistingJobsCount++;
+      }
       continue;
     }
 
@@ -250,6 +253,13 @@ export async function reconcileSends(
     );
 
     reconciledJobIds.push(job.id);
+  }
+
+  if (finishedExistingJobsCount > 0) {
+    const logger = deps.logger ?? console;
+    logger.info?.(
+      `[Reconcile] pending rows with an existing finished job: ${finishedExistingJobsCount}`
+    );
   }
 
   return { reconciledCount: reconciledJobIds.length, jobIds: reconciledJobIds };

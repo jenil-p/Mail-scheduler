@@ -165,7 +165,7 @@ describe("reconcileSends", () => {
     );
   });
 
-  it("removes completed or failed jobs and re-adds them", async () => {
+  it("does not remove or re-add completed or failed jobs, counts and logs pending rows with an existing finished job", async () => {
     const scheduledAt = new Date("2026-12-01T10:00:00Z");
     const db = {
       campaign: {
@@ -192,15 +192,15 @@ describe("reconcileSends", () => {
     });
     const addJob = vi.fn().mockResolvedValue(undefined);
     const clock = { now: () => new Date("2026-12-01T11:00:00Z") }; // past due -> delay 0
+    const logger = { info: vi.fn(), error: vi.fn() };
 
-    const result = await reconcileSends("c1", { db, getJob, addJob, clock });
+    const result = await reconcileSends("c1", { db, getJob, addJob, clock, logger });
 
-    expect(result.reconciledCount).toBe(1);
-    expect(remove).toHaveBeenCalled();
-    expect(addJob).toHaveBeenCalledWith(
-      "email-job",
-      expect.anything(),
-      expect.objectContaining({ delay: 0, jobId: "j1" })
+    expect(result.reconciledCount).toBe(0);
+    expect(remove).not.toHaveBeenCalled();
+    expect(addJob).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("pending rows with an existing finished job: 1")
     );
   });
 
