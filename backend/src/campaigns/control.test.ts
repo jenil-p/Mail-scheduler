@@ -3,6 +3,8 @@ import {
   pauseCampaign,
   resumeCampaign,
   cancelCampaign,
+  releaseUnsentJobs,
+  finishCancellations,
   CancelNotSupportedYetError,
   IdentityMismatchError,
   type ControlDeps,
@@ -34,6 +36,25 @@ function createFakeDb(initialState: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
         const c = campaigns.get(where.id);
         return c ? { ...c } : null;
+      }),
+      findMany: vi.fn(async ({ where }: { where?: any } = {}) => {
+        let list = Array.from(campaigns.values());
+        if (where?.status?.in) {
+          list = list.filter((c) => where.status.in.includes(c.status));
+        } else if (where?.status && typeof where.status === "string") {
+          list = list.filter((c) => c.status === where.status);
+        }
+        if (where?.drafts?.some?.emailJob?.status?.in) {
+          const statuses = where.drafts.some.emailJob.status.in;
+          list = list.filter((c) => {
+            const campDrafts = Array.from(drafts.values()).filter((d) => d.campaignId === c.id);
+            return campDrafts.some((d) => {
+              const job = emailJobs.get(d.emailJobId);
+              return job && statuses.includes(job.status);
+            });
+          });
+        }
+        return list.map((c) => ({ ...c }));
       }),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: any }) => {
         const c = campaigns.get(where.id);
@@ -649,5 +670,46 @@ describe("control.ts - cancelCampaign", () => {
     await expect(cancelCampaign("camp-2", { db: client2 as any })).rejects.toThrow(
       IllegalTransitionError
     );
+  });
+});
+
+describe("control.ts - finishCancellations", () => {
+  it("cleans up CANCELLED campaigns that still have pending email jobs", async () => {
+    const queueRemovals: string[] = [];
+    const getJob = vi.fn(async (id: string) => ({
+      getState: async () => "waiting",
+      remove: vi.fn(async () => {
+        queueRemovals.push(id);
+      }),
+    }));
+
+    const { client, drafts, emailJobs } = createFakeDb({
+      campaigns: [
+        { id: "c-active", status: "SCHEDULED" },
+        { id: "c-cancelled", status: "CANCELLED" },
+      ],
+      drafts: [
+        { id: "d-active", campaignId: "c-active", status: "QUEUED", emailJobId: "job-active" },
+        { id: "d-cancelled", campaignId: "c-cancelled", status: "QUEUED", emailJobId: "job-cancelled" },
+      ],
+      emailJobs: [
+        { id: "job-active", status: "pending" },
+        { id: "job-cancelled", status: "pending" },
+      ],
+    });
+
+    const res = await finishCancellations({ db: client as any, getJob });
+    expect(res.processedCount).toBe(1);
+    expect(res.campaignIds).toEqual(["c-cancelled"]);
+
+    // c-cancelled pending job is deleted, draft is HELD, queue job removed
+    expect(emailJobs.has("job-cancelled")).toBe(false);
+    expect(drafts.get("d-cancelled").status).toBe("HELD");
+    expect(drafts.get("d-cancelled").emailJobId).toBeNull();
+    expect(queueRemovals).toEqual(["job-cancelled"]);
+
+    // c-active pending job is untouched
+    expect(emailJobs.has("job-active")).toBe(true);
+    expect(drafts.get("d-active").status).toBe("QUEUED");
   });
 });

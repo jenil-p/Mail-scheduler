@@ -26,6 +26,18 @@ function createFakeDb(initialState: {
         let list = Array.from(campaigns.values());
         if (where?.status?.in) {
           list = list.filter((c) => where.status.in.includes(c.status));
+        } else if (where?.status && typeof where.status === "string") {
+          list = list.filter((c) => c.status === where.status);
+        }
+        if (where?.drafts?.some?.emailJob?.status?.in) {
+          const statuses = where.drafts.some.emailJob.status.in;
+          list = list.filter((c) => {
+            const campDrafts = Array.from(drafts.values()).filter((d) => d.campaignId === c.id);
+            return campDrafts.some((d) => {
+              const job = emailJobs.get(d.emailJobId);
+              return job && statuses.includes(job.status);
+            });
+          });
         }
         return list.map((c) => ({ ...c }));
       }),
@@ -139,6 +151,7 @@ function createFakeDb(initialState: {
           if (!d) continue;
           if (where.campaignId && d.campaignId !== where.campaignId) continue;
           if (where.promptVersion && d.promptVersion !== where.promptVersion) continue;
+          if (where.emailJobId === null && d.emailJobId !== null) continue;
           if (where.status) {
             if (typeof where.status === "string" && d.status !== where.status) continue;
             if (where.status.in && !where.status.in.includes(d.status)) continue;
@@ -150,7 +163,57 @@ function createFakeDb(initialState: {
       }),
     },
     emailJob: {
-      findMany: vi.fn(async () => Array.from(emailJobs.values())),
+      findMany: vi.fn(async ({ where, take }: { where?: any; take?: number } = {}) => {
+        let list = Array.from(emailJobs.values());
+        if (where?.id?.in) {
+          list = list.filter((j) => where.id.in.includes(j.id));
+        } else if (where?.id) {
+          list = list.filter((j) => j.id === where.id);
+        }
+        if (where?.status?.in) {
+          list = list.filter((j) => where.status.in.includes(j.status));
+        } else if (where?.status) {
+          list = list.filter((j) => j.status === where.status);
+        }
+        if (where?.generatedDraft?.campaignId) {
+          const cId = where.generatedDraft.campaignId;
+          const targetIds = cId.in ? cId.in : [cId];
+          list = list.filter((j) => {
+            const draft = Array.from(drafts.values()).find((d) => d.emailJobId === j.id);
+            return draft && targetIds.includes(draft.campaignId);
+          });
+        }
+        if (take !== undefined) {
+          list = list.slice(0, take);
+        }
+        return list.map((j) => {
+          const draft = Array.from(drafts.values()).find((d) => d.emailJobId === j.id);
+          return {
+            ...j,
+            generatedDraft: draft ? { id: draft.id } : null,
+          };
+        });
+      }),
+      deleteMany: vi.fn(async ({ where }: { where: any }) => {
+        let count = 0;
+        const idsToDelete = where?.id?.in ? where.id.in : where?.id ? [where.id] : [];
+        for (const id of idsToDelete) {
+          const job = emailJobs.get(id);
+          if (!job) continue;
+          if (where?.status?.in && !where.status.in.includes(job.status)) continue;
+          if (where?.status && typeof where.status === "string" && job.status !== where.status) continue;
+          if (emailJobs.delete(id)) {
+            count++;
+            for (const d of drafts.values()) {
+              if (d.emailJobId === id) {
+                d.emailJobId = null;
+                d.emailJob = null;
+              }
+            }
+          }
+        }
+        return { count };
+      }),
       count: vi.fn(async () => emailJobs.size),
     },
     $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(client)),
@@ -441,6 +504,144 @@ describe("tick", () => {
         // Exactly 1 EmailJob was created (for d3)
         expect(db._state.emailJobs.size).toBe(1);
       });
+    });
+
+    it("calls finishCancellations before reconcileSends during the tick", async () => {
+      const order: string[] = [];
+      const db = {
+        campaign: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      } as any;
+      const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 0, draftIds: [] });
+      const enforceDeadlines = vi.fn().mockResolvedValue({ processedCampaigns: 0, cancelledCampaigns: 0, resolvedDrafts: 0 });
+      const refresh = vi.fn().mockResolvedValue({ refreshed: false });
+      const finishCancellations = vi.fn().mockImplementation(async () => {
+        order.push("finishCancellations");
+        return { processedCount: 0 };
+      });
+      const reconcileSends = vi.fn().mockImplementation(async () => {
+        order.push("reconcileSends");
+        return { reconciledCount: 0, jobIds: [] };
+      });
+      const logger = { info: vi.fn(), error: vi.fn() };
+
+      await executeCampaignTickRun({
+        db,
+        reconcile,
+        enforceDeadlines,
+        refresh,
+        finishCancellations,
+        reconcileSends,
+        logger,
+      });
+
+      expect(order).toEqual(["finishCancellations", "reconcileSends"]);
+      expect(finishCancellations).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs error class only when finishCancellations throws, and still runs reconcileSends", async () => {
+      class CleanupCrashError extends Error {
+        constructor() {
+          super("database connection dropped");
+          this.name = "CleanupCrashError";
+        }
+      }
+
+      const db = {
+        campaign: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      } as any;
+
+      const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 0, draftIds: [] });
+      const finishCancellations = vi.fn().mockRejectedValue(new CleanupCrashError());
+      const reconcileSends = vi.fn().mockResolvedValue({ reconciledCount: 0, jobIds: [] });
+      const refresh = vi.fn().mockResolvedValue({ refreshed: false });
+      const logger = { info: vi.fn(), error: vi.fn() };
+
+      await executeCampaignTickRun({
+        db,
+        reconcile,
+        finishCancellations,
+        reconcileSends,
+        refresh,
+        logger,
+      });
+
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringMatching(/\[CampaignTick\] Finish cancellations error: CleanupCrashError/)
+      );
+      expect(reconcileSends).toHaveBeenCalledTimes(1);
+    });
+
+    it("campaign CANCELLED with pending rows and queue jobs (simulating a crash after step a) is cleaned up by one tick run, and a following reconcileSends adds nothing", async () => {
+      const removedQueueJobs: string[] = [];
+      const getJob = vi.fn(async (id: string) => ({
+        getState: async () => "delayed",
+        remove: vi.fn(async () => {
+          removedQueueJobs.push(id);
+        }),
+      }));
+
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c-cancelled",
+            status: "CANCELLED",
+            userId: "u1",
+            scheduledAt: new Date("2026-12-01T12:00:00Z"),
+            promptFingerprint: "fp1",
+          },
+        ],
+        drafts: [
+          {
+            id: "d1",
+            campaignId: "c-cancelled",
+            recipientId: "r1",
+            status: "QUEUED",
+            promptVersion: "fp1",
+            emailJobId: "job-1",
+          },
+        ],
+        emailJobs: [
+          {
+            id: "job-1",
+            status: "pending",
+          },
+        ],
+      });
+
+      const reconcile = vi.fn().mockResolvedValue({ reconciledCount: 0, draftIds: [] });
+      const addedSendJobs: any[] = [];
+      const addJob = vi.fn(async (name, data, opts) => {
+        addedSendJobs.push({ name, data, opts });
+      });
+
+      // Run executeCampaignTickRun with real finishCancellations and reconcileSends
+      await executeCampaignTickRun({
+        db,
+        getJob,
+        reconcile,
+        reconcileSends: (cId, deps) =>
+          import("./reconcile").then((m) =>
+            m.reconcileSends(cId, { ...deps, db, getJob, addJob })
+          ),
+      });
+
+      // The EmailJob row was deleted
+      expect(db._state.emailJobs.has("job-1")).toBe(false);
+
+      // Draft was updated to HELD and its emailJobId SetNull
+      const d1 = db._state.drafts.get("d1");
+      expect(d1.status).toBe("HELD");
+      expect(d1.emailJobId).toBeNull();
+
+      // Queue job was removed
+      expect(removedQueueJobs).toEqual(["job-1"]);
+
+      // Following reconcileSends added nothing
+      expect(addedSendJobs).toHaveLength(0);
     });
   });
 

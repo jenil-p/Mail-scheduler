@@ -242,46 +242,19 @@ function sameIds(a: string[], b: string[]): boolean {
 }
 
 /**
- * Cancel a campaign (spec Phase 6b).
- * Allowed from: DRAFT, SAMPLING, SAMPLE_REVIEW, GENERATING, EXCEPTION_REVIEW, PAUSED, SCHEDULED, SENDING.
- *
- * In this order:
- * (a) transition the campaign to CANCELLED;
- * (b) in chunks of 50: find the campaign's EmailJobs with status pending or rate_limited,
- *     delete those rows (the draft's emailJobId becomes null through SetNull) and set the draft
- *     status to HELD; never touch sent or failed rows;
- * (c) best-effort remove their jobs from the send queue (getJob, remove unless the job is active),
- *     logging only the error class on failure.
+ * Release unsent jobs for a cancelled campaign (spec Phase 6b):
+ * (b) In chunks of 50: find pending or rate_limited EmailJobs, delete them with a precondition,
+ *     and set draft status to HELD (via SetNull emailJobId);
+ * (c) Best-effort remove from send queue only for the ids actually deleted.
  */
-export async function cancelCampaign(
+export async function releaseUnsentJobs(
   campaignId: string,
   deps: ControlDeps = {}
-): Promise<{ ok: boolean }> {
+): Promise<{ releasedCount: number }> {
   const db = deps.db ?? (await import("../db/pool")).prisma;
   const logger = deps.logger ?? console;
   const chunkSize = deps.chunkSize ?? 50;
 
-  // (a) Transition campaign to CANCELLED
-  await db.$transaction(async (tx) => {
-    const campaign = await tx.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true },
-    });
-    if (!campaign) {
-      throw new Error(`Campaign ${campaignId} does not exist`);
-    }
-
-    if (!ALLOWED_CANCEL_STATUSES.includes(campaign.status)) {
-      throw new IllegalTransitionError(campaign.status, "CANCELLED");
-    }
-
-    const moved = await transition(tx, campaignId, campaign.status, "CANCELLED");
-    if (!moved) {
-      throw new IllegalTransitionError(campaign.status, "CANCELLED");
-    }
-  });
-
-  // (b) In chunks of 50: find pending or rate_limited EmailJobs, delete them and set draft status to HELD
   const deletedJobIds: string[] = [];
   let lastZeroDeleteJobIds: string[] | null = null;
 
@@ -372,6 +345,89 @@ export async function cancelCampaign(
       }
     }
   }
+
+  return { releasedCount: deletedJobIds.length };
+}
+
+/**
+ * Sweep for CANCELLED campaigns that still have EmailJobs (through drafts) in pending or rate_limited,
+ * and releases those jobs (spec Phase 6b).
+ */
+export async function finishCancellations(
+  deps: ControlDeps = {}
+): Promise<{ processedCount: number; campaignIds: string[] }> {
+  const db = deps.db ?? (await import("../db/pool")).prisma;
+  const logger = deps.logger ?? console;
+
+  const campaigns = await db.campaign.findMany({
+    where: {
+      status: "CANCELLED",
+      drafts: {
+        some: {
+          emailJob: {
+            status: { in: ["pending", "rate_limited"] },
+          },
+        },
+      },
+    },
+    select: { id: true },
+  });
+
+  const processedCampaignIds: string[] = [];
+
+  for (const campaign of campaigns) {
+    try {
+      await releaseUnsentJobs(campaign.id, deps);
+      processedCampaignIds.push(campaign.id);
+    } catch (err: unknown) {
+      const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+      logger.error(`[Control] finishCancellations failed for campaign ${campaign.id}: ${errClass}`);
+    }
+  }
+
+  return { processedCount: processedCampaignIds.length, campaignIds: processedCampaignIds };
+}
+
+/**
+ * Cancel a campaign (spec Phase 6b).
+ * Allowed from: DRAFT, SAMPLING, SAMPLE_REVIEW, GENERATING, EXCEPTION_REVIEW, PAUSED, SCHEDULED, SENDING.
+ *
+ * In this order:
+ * (a) transition the campaign to CANCELLED;
+ * (b) in chunks of 50: find the campaign's EmailJobs with status pending or rate_limited,
+ *     delete those rows (the draft's emailJobId becomes null through SetNull) and set the draft
+ *     status to HELD; never touch sent or failed rows;
+ * (c) best-effort remove their jobs from the send queue (getJob, remove unless the job is active),
+ *     logging only the error class on failure.
+ */
+export async function cancelCampaign(
+  campaignId: string,
+  deps: ControlDeps = {}
+): Promise<{ ok: boolean }> {
+  const db = deps.db ?? (await import("../db/pool")).prisma;
+
+  // (a) Transition campaign to CANCELLED
+  await db.$transaction(async (tx) => {
+    const campaign = await tx.campaign.findUnique({
+      where: { id: campaignId },
+      select: { id: true, status: true },
+    });
+    if (!campaign) {
+      throw new Error(`Campaign ${campaignId} does not exist`);
+    }
+
+    if (!ALLOWED_CANCEL_STATUSES.includes(campaign.status)) {
+      throw new IllegalTransitionError(campaign.status, "CANCELLED");
+    }
+
+    const moved = await transition(tx, campaignId, campaign.status, "CANCELLED");
+    if (!moved) {
+      throw new IllegalTransitionError(campaign.status, "CANCELLED");
+    }
+  });
+
+  // (b) & (c) Release unsent jobs and clean up queue entries
+  await releaseUnsentJobs(campaignId, deps);
 
   return { ok: true };
 }

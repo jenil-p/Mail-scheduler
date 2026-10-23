@@ -34,6 +34,10 @@ import {
   type EnforceDeadlinesDeps,
   type EnforceDeadlinesResult,
 } from "./deadlines";
+import {
+  finishCancellations,
+  type ControlDeps,
+} from "./control";
 
 export interface CampaignTickOptions {
   intervalMs?: number;
@@ -50,6 +54,8 @@ export interface CampaignTickDeps {
     deps?: FlowDeps
   ) => Promise<{ refreshed: boolean; from?: CampaignStatus; to?: CampaignStatus }>;
   enforceDeadlines?: (deps?: EnforceDeadlinesDeps) => Promise<EnforceDeadlinesResult>;
+  finishCancellations?: (deps?: ControlDeps) => Promise<{ processedCount: number }>;
+  getJob?: ControlDeps["getJob"];
   logger?: {
     info?: (message: string) => void;
     error: (message: string) => void;
@@ -136,7 +142,23 @@ export async function executeCampaignTickRun(deps: CampaignTickDeps = {}): Promi
     }
   }
 
-  // 4. Reconcile send jobs for SCHEDULED and SENDING campaigns
+  // 4. Finish cancellations for CANCELLED campaigns that still have unsent jobs (BEFORE reconcileSends)
+  try {
+    const finishCancellationsFn = deps.finishCancellations ?? finishCancellations;
+    const outcome = await finishCancellationsFn({
+      db,
+      logger,
+      getJob: deps.getJob,
+    });
+    if (outcome.processedCount > 0) {
+      logger.info?.(`[CampaignTick] Finished cancellations for ${outcome.processedCount} campaigns`);
+    }
+  } catch (err: unknown) {
+    const errClass = (err as Error)?.constructor?.name || (err as Error)?.name || "Error";
+    logger.error(`[CampaignTick] Finish cancellations error: ${errClass}`);
+  }
+
+  // 5. Reconcile send jobs for SCHEDULED and SENDING campaigns
   try {
     const reconcileSendsFn = deps.reconcileSends ?? reconcileSends;
     const outcome = await reconcileSendsFn(undefined, {
