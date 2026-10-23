@@ -19,6 +19,12 @@ app.use(
     credentials: true,
   })
 );
+
+if (isAiPersonalizationEnabled()) {
+  const campaignsRoutes = (await import("./routes/campaigns")).default;
+  app.use("/api/campaigns", campaignsRoutes);
+}
+
 app.use(express.json({ limit: "10mb" }));
 
 app.get("/api/health", (_req, res) => {
@@ -85,6 +91,10 @@ async function shutdown(): Promise<void> {
   console.log("Shutting down gracefully...");
   if (stopCampaignTick) {
     await stopCampaignTick();
+  }
+  if (isAiPersonalizationEnabled()) {
+    const { closeCampaignRuntime } = await import("./campaigns/runtime");
+    await closeCampaignRuntime();
   }
   // Workers first (they finish the job in flight), then the queues they read from.
   await Promise.all([worker.close(), generateWorker?.close()]);
