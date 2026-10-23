@@ -235,6 +235,12 @@ export async function resumeCampaign(
   return { ok: true, status: targetStatus };
 }
 
+function sameIds(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const setA = new Set(a);
+  return b.every((id) => setA.has(id));
+}
+
 /**
  * Cancel a campaign (spec Phase 6b).
  * Allowed from: DRAFT, SAMPLING, SAMPLE_REVIEW, GENERATING, EXCEPTION_REVIEW, PAUSED, SCHEDULED, SENDING.
@@ -277,6 +283,7 @@ export async function cancelCampaign(
 
   // (b) In chunks of 50: find pending or rate_limited EmailJobs, delete them and set draft status to HELD
   const deletedJobIds: string[] = [];
+  let lastZeroDeleteJobIds: string[] | null = null;
 
   while (true) {
     const jobs = await db.emailJob.findMany({
@@ -300,24 +307,45 @@ export async function cancelCampaign(
     }
 
     const jobIds = jobs.map((j) => j.id);
+
+    if (lastZeroDeleteJobIds && sameIds(lastZeroDeleteJobIds, jobIds)) {
+      const log = logger.info ?? logger.error;
+      log(`[Control] cancel stuck: ${jobIds.length} unchanged jobs`);
+      break;
+    }
+
     const draftIds = jobs
       .map((j) => j.generatedDraft?.id)
       .filter((id): id is string => Boolean(id));
 
-    await db.$transaction(async (tx) => {
+    const deleteRes = await db.$transaction(async (tx) => {
+      const res = await tx.emailJob.deleteMany({
+        where: { id: { in: jobIds }, status: { in: ["pending", "rate_limited"] } },
+      });
+
       if (draftIds.length > 0) {
         await tx.generatedDraft.updateMany({
-          where: { id: { in: draftIds } },
+          where: { id: { in: draftIds }, emailJobId: null, status: "QUEUED" },
           data: { status: "HELD" },
         });
       }
 
-      await tx.emailJob.deleteMany({
-        where: { id: { in: jobIds } },
-      });
+      return res;
     });
 
-    deletedJobIds.push(...jobIds);
+    if (deleteRes.count === 0) {
+      lastZeroDeleteJobIds = jobIds;
+    } else {
+      lastZeroDeleteJobIds = null;
+    }
+
+    const remaining = await db.emailJob.findMany({
+      where: { id: { in: jobIds } },
+      select: { id: true },
+    });
+    const remainingSet = new Set(remaining.map((j) => j.id));
+    const actuallyDeleted = jobIds.filter((id) => !remainingSet.has(id));
+    deletedJobIds.push(...actuallyDeleted);
   }
 
   // (c) Best-effort remove from send queue (getJob, remove unless the job is active)

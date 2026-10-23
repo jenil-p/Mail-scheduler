@@ -89,10 +89,11 @@ function createFakeDb(initialState: {
           const idMatches = where.id?.in
             ? where.id.in.includes(d.id)
             : where.id === undefined || where.id === d.id;
-          if (idMatches) {
-            Object.assign(d, data);
-            count++;
-          }
+          if (!idMatches) continue;
+          if (where.emailJobId === null && d.emailJobId !== null) continue;
+          if (where.status && d.status !== where.status) continue;
+          Object.assign(d, data);
+          count++;
         }
         return { count };
       }),
@@ -100,6 +101,11 @@ function createFakeDb(initialState: {
     emailJob: {
       findMany: vi.fn(async ({ where, take }: { where?: any; take?: number }) => {
         let list = Array.from(emailJobs.values());
+        if (where?.id?.in) {
+          list = list.filter((j) => where.id.in.includes(j.id));
+        } else if (where?.id) {
+          list = list.filter((j) => j.id === where.id);
+        }
         if (where?.status?.in) {
           list = list.filter((j) => where.status.in.includes(j.status));
         } else if (where?.status) {
@@ -127,6 +133,10 @@ function createFakeDb(initialState: {
         let count = 0;
         const idsToDelete = where?.id?.in ? where.id.in : where?.id ? [where.id] : [];
         for (const id of idsToDelete) {
+          const job = emailJobs.get(id);
+          if (!job) continue;
+          if (where?.status?.in && !where.status.in.includes(job.status)) continue;
+          if (where?.status && typeof where.status === "string" && job.status !== where.status) continue;
           if (emailJobs.delete(id)) {
             count++;
             for (const d of drafts.values()) {
@@ -545,6 +555,84 @@ describe("control.ts - cancelCampaign", () => {
     expect(res.ok).toBe(true);
     expect(campaigns.get("camp-1").status).toBe("CANCELLED");
     expect(logger.error).toHaveBeenCalledWith("[Control] queue remove failed: TypeError");
+  });
+
+  it("an EmailJob flipped to 'sent' between the find and the delete survives, and its draft stays QUEUED", async () => {
+    const queueRemovals: string[] = [];
+    const getJob = vi.fn(async (id: string) => ({
+      getState: async () => "delayed",
+      remove: vi.fn(async () => {
+        queueRemovals.push(id);
+      }),
+    }));
+
+    const { client, campaigns, drafts, emailJobs } = createFakeDb({
+      campaigns: [{ id: "camp-1", status: "SCHEDULED" }],
+      drafts: [
+        { id: "d-pending", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-pending" },
+        { id: "d-flipping", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-flipping" },
+      ],
+      emailJobs: [
+        { id: "job-pending", status: "pending" },
+        { id: "job-flipping", status: "pending" },
+      ],
+    });
+
+    // Simulate concurrent flip: when findMany is called, job-flipping is returned as pending;
+    // but before deleteMany runs, job-flipping flips to "sent" in DB
+    const origFindMany = client.emailJob.findMany;
+    let findManyCalled = false;
+    client.emailJob.findMany = vi.fn(async (args: any) => {
+      const res = await origFindMany(args);
+      if (!findManyCalled && args?.where?.generatedDraft?.campaignId) {
+        findManyCalled = true;
+        const job = emailJobs.get("job-flipping");
+        if (job) job.status = "sent";
+      }
+      return res;
+    });
+
+    const res = await cancelCampaign("camp-1", { db: client as any, getJob });
+    expect(res.ok).toBe(true);
+    expect(campaigns.get("camp-1").status).toBe("CANCELLED");
+
+    // job-flipping survived with status "sent"
+    expect(emailJobs.has("job-flipping")).toBe(true);
+    expect(emailJobs.get("job-flipping").status).toBe("sent");
+
+    // draft for job-flipping stays QUEUED with emailJobId intact
+    expect(drafts.get("d-flipping").status).toBe("QUEUED");
+    expect(drafts.get("d-flipping").emailJobId).toBe("job-flipping");
+
+    // job-pending was deleted and its draft became HELD
+    expect(emailJobs.has("job-pending")).toBe(false);
+    expect(drafts.get("d-pending").status).toBe("HELD");
+    expect(drafts.get("d-pending").emailJobId).toBeNull();
+
+    // queue remove was only called for the deleted job-pending, NOT job-flipping
+    expect(queueRemovals).toEqual(["job-pending"]);
+  });
+
+  it("breaks out and logs count only when chunk deletes 0 rows and next findMany returns same ids", async () => {
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const { client, campaigns } = createFakeDb({
+      campaigns: [{ id: "camp-1", status: "SCHEDULED" }],
+      drafts: [
+        { id: "d-1", campaignId: "camp-1", status: "QUEUED", emailJobId: "job-1" },
+      ],
+      emailJobs: [
+        { id: "job-1", status: "pending" },
+      ],
+    });
+
+    // deleteMany deletes 0 rows
+    client.emailJob.deleteMany = vi.fn().mockResolvedValue({ count: 0 });
+
+    const res = await cancelCampaign("camp-1", { db: client as any, logger });
+    expect(res.ok).toBe(true);
+    expect(campaigns.get("camp-1").status).toBe("CANCELLED");
+    const log = logger.info.mock.calls.length > 0 ? logger.info : logger.error;
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/1/));
   });
 
   it("throws IllegalTransitionError when campaign is already CANCELLED or COMPLETED", async () => {
