@@ -124,9 +124,20 @@ function createFakeDb(initialState: {
       }),
       update: vi.fn(async ({ where, data }: { where: { id: string; status?: any; emailJob?: any }; data: any }) => {
         const existing = drafts.get(where.id);
-        if (!existing) throw new Error(`Draft ${where.id} not found`);
+        if (!existing) {
+          const err = new Error(`Draft ${where.id} not found`);
+          (err as any).code = "P2025";
+          throw err;
+        }
         if (where.status !== undefined && existing.status !== where.status) {
-          throw new Error("Precondition failed");
+          const err = new Error("Precondition failed");
+          (err as any).code = "P2025";
+          throw err;
+        }
+        if ((where.emailJob === null || (where as any).emailJobId === null) && existing.emailJobId != null) {
+          const err = new Error("Precondition failed");
+          (err as any).code = "P2025";
+          throw err;
         }
         let emailJob = existing.emailJob;
         if (data.emailJob?.create) {

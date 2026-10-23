@@ -111,12 +111,20 @@ function createFakeDb(initialState: {
       }),
       update: vi.fn(async ({ where, data }: { where: { id: string; status?: any; emailJobId?: any }; data: any }) => {
         const existing = drafts.get(where.id);
-        if (!existing) throw new Error(`Draft ${where.id} not found`);
+        if (!existing) {
+          const err = new Error(`Draft ${where.id} not found`);
+          (err as any).code = "P2025";
+          throw err;
+        }
         if (where.status !== undefined && existing.status !== where.status) {
-          throw new Error(`Record to update not found (status precondition failed)`);
+          const err = new Error(`Record to update not found (status precondition failed)`);
+          (err as any).code = "P2025";
+          throw err;
         }
         if ((where.emailJobId === null || (where as any).emailJob === null) && existing.emailJobId != null) {
-          throw new Error(`Record to update not found (emailJobId precondition failed)`);
+          const err = new Error(`Record to update not found (emailJobId precondition failed)`);
+          (err as any).code = "P2025";
+          throw err;
         }
         let emailJob = existing.emailJob;
         if (data.emailJob?.create) {
@@ -1517,6 +1525,37 @@ describe("flow", () => {
         scheduleCampaign("c1", "GENERATING", { db })
       ).rejects.toThrow(/Draft d1 has no recipient/);
 
+      expect(db._state.emailJobs.size).toBe(0);
+    });
+
+    it("a non-P2025 error propagates and the transaction fails", async () => {
+      const fingerprint = "fp1";
+      const db = createFakeDb({
+        campaigns: [
+          {
+            id: "c1",
+            userId: "owner@example.com",
+            status: "GENERATING",
+            promptFingerprint: fingerprint,
+            scheduledAt: new Date(),
+          },
+        ],
+        recipients: [{ id: "r1", campaignId: "c1", email: "r1@example.com" }],
+        drafts: [
+          { id: "d1", campaignId: "c1", recipientId: "r1", promptVersion: fingerprint, status: "READY", subject: "S", body: "B" },
+        ],
+      });
+
+      // Cause a non-P2025 error (e.g. database network error or unique violation)
+      const nonP2025Error = new Error("Database connection closed");
+      (nonP2025Error as any).code = "P1001";
+      db.generatedDraft.update = vi.fn().mockRejectedValue(nonP2025Error);
+
+      await expect(
+        scheduleCampaign("c1", "GENERATING", { db })
+      ).rejects.toThrow("Database connection closed");
+
+      // No email jobs created
       expect(db._state.emailJobs.size).toBe(0);
     });
   });

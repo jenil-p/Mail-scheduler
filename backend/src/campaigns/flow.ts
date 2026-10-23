@@ -564,10 +564,11 @@ export async function queueDraftsForSend(
         createdJobs.push(updated.emailJob);
       }
     } catch (err: any) {
-      if (err instanceof Error && err.message.includes("has no recipient")) {
+      if (err?.code === "P2025") {
+        skippedCount++;
+      } else {
         throw err;
       }
-      skippedCount++;
     }
   }
 
