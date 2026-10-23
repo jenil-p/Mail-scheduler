@@ -475,10 +475,18 @@ router.post(
 
     // Any blocking problem returns 422 with details
     if (errors.length > 0) {
+      const primaryCode =
+        errors.find((e) => e.code === "FULL_REVIEW_TOO_LARGE")?.code ??
+        errors.find((e) => e.code === "SCHEDULE_TOO_SOON")?.code ??
+        errors.find((e) => e.code === "RESERVED_COLUMN")?.code ??
+        errors.find((e) => e.code === "TOO_MANY_RECIPIENTS")?.code ??
+        errors.find((e) => e.code === "AI_INSTRUCTION_NOT_ALLOWED")?.code ??
+        (errors.length === 1 ? errors[0].code : "VALIDATION_FAILED");
+
       res.status(422).json({
         success: false,
         error: {
-          code: errors.length === 1 ? errors[0].code : "VALIDATION_FAILED",
+          code: primaryCode,
           message: "Campaign validation failed",
           details: {
             errors,
