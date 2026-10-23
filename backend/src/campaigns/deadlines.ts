@@ -57,6 +57,100 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
+export interface CandidateCampaignForDeadline {
+  id: string;
+  status: CampaignStatus;
+  scheduledAt: Date;
+  onUnresolved: string;
+  promptFingerprint: string | null;
+  subjectTemplate: string;
+  bodyTemplate: string;
+  linkUrl: string;
+  unsubscribeUrl: string;
+}
+
+/**
+ * Shared helper to resolve unfinished drafts for a campaign at deadline (spec Phase 6b).
+ */
+export async function resolveUnfinished(
+  db: PrismaClient,
+  campaign: CandidateCampaignForDeadline,
+  fromStatuses: string[],
+  plainReason: string,
+  chunkSize = DEADLINE_CHUNK_SIZE
+): Promise<number> {
+  if (!campaign.promptFingerprint) return 0;
+
+  const drafts = await db.generatedDraft.findMany({
+    where: {
+      campaignId: campaign.id,
+      promptVersion: campaign.promptFingerprint,
+      status: { in: fromStatuses as any },
+    },
+    include: {
+      recipient: true,
+    },
+  });
+
+  let resolvedCount = 0;
+  const chunks = chunkArray(drafts, chunkSize);
+
+  for (const chunk of chunks) {
+    await db.$transaction(async (tx: any) => {
+      if (campaign.onUnresolved === "HOLD") {
+        const res = await tx.generatedDraft.updateMany({
+          where: {
+            id: { in: chunk.map((d) => d.id) },
+            status: { in: fromStatuses as any },
+          },
+          data: {
+            status: "HELD",
+            resolvedBy: "SYSTEM",
+          },
+        });
+        resolvedCount += res.count;
+      } else {
+        // FALLBACK_TO_PLAIN
+        for (const draft of chunk) {
+          const rendered = renderCampaignEmail({
+            subjectTemplate: campaign.subjectTemplate,
+            bodyTemplate: campaign.bodyTemplate,
+            recipient: {
+              firstName: draft.recipient?.firstName,
+              company: draft.recipient?.company,
+              role: draft.recipient?.role,
+              note: draft.recipient?.note,
+              extra: (draft.recipient?.extra ?? undefined) as
+                | Record<string, unknown>
+                | undefined,
+            },
+            campaign,
+            aiIntro: undefined,
+          });
+
+          const res = await tx.generatedDraft.updateMany({
+            where: {
+              id: draft.id,
+              status: { in: fromStatuses as any },
+            },
+            data: {
+              status: "FALLBACK",
+              fallbackReason: plainReason,
+              resolvedBy: "SYSTEM",
+              aiIntro: null,
+              subject: rendered.subject,
+              body: rendered.body,
+            },
+          });
+          resolvedCount += res.count;
+        }
+      }
+    });
+  }
+
+  return resolvedCount;
+}
+
 export async function enforceDeadlines(
   deps: EnforceDeadlinesDeps = {}
 ): Promise<EnforceDeadlinesResult> {
@@ -74,17 +168,7 @@ export async function enforceDeadlines(
     "EXCEPTION_REVIEW",
   ];
 
-  let candidateCampaigns: Array<{
-    id: string;
-    status: CampaignStatus;
-    scheduledAt: Date;
-    onUnresolved: string;
-    promptFingerprint: string | null;
-    subjectTemplate: string;
-    bodyTemplate: string;
-    linkUrl: string;
-    unsubscribeUrl: string;
-  }> = [];
+  let candidateCampaigns: CandidateCampaignForDeadline[] = [];
 
   try {
     candidateCampaigns = await db.campaign.findMany({
@@ -158,145 +242,23 @@ export async function enforceDeadlines(
 
       // b. GENERATING
       if (campaign.status === "GENERATING" && campaign.promptFingerprint) {
-        const fingerprint = campaign.promptFingerprint;
-        const incompleteDrafts = await db.generatedDraft.findMany({
-          where: {
-            campaignId: campaign.id,
-            promptVersion: fingerprint,
-            status: { in: ["PENDING", "GENERATING"] },
-          },
-          include: {
-            recipient: true,
-          },
-        });
+        const resolvedIncomplete = await resolveUnfinished(
+          db,
+          campaign,
+          ["PENDING", "GENERATING"],
+          "GENERATION_INCOMPLETE_AT_DEADLINE",
+          DEADLINE_CHUNK_SIZE
+        );
 
-        let resolvedIncomplete = 0;
-        const incompleteChunks = chunkArray(incompleteDrafts, DEADLINE_CHUNK_SIZE);
+        const resolvedFlagged = await resolveUnfinished(
+          db,
+          campaign,
+          ["FLAGGED"],
+          "UNRESOLVED_AT_DEADLINE",
+          DEADLINE_CHUNK_SIZE
+        );
 
-        for (const chunk of incompleteChunks) {
-          await db.$transaction(async (tx: any) => {
-            if (campaign.onUnresolved === "HOLD") {
-              const res = await tx.generatedDraft.updateMany({
-                where: {
-                  id: { in: chunk.map((d) => d.id) },
-                  status: { in: ["PENDING", "GENERATING"] },
-                },
-                data: {
-                  status: "HELD",
-                  resolvedBy: "SYSTEM",
-                },
-              });
-              resolvedIncomplete += res.count;
-            } else {
-              // FALLBACK_TO_PLAIN
-              for (const draft of chunk) {
-                const rendered = renderCampaignEmail({
-                  subjectTemplate: campaign.subjectTemplate,
-                  bodyTemplate: campaign.bodyTemplate,
-                  recipient: {
-                    firstName: draft.recipient?.firstName,
-                    company: draft.recipient?.company,
-                    role: draft.recipient?.role,
-                    note: draft.recipient?.note,
-                    extra: (draft.recipient?.extra ?? undefined) as
-                      | Record<string, unknown>
-                      | undefined,
-                  },
-                  campaign,
-                  aiIntro: undefined,
-                });
-
-                const res = await tx.generatedDraft.updateMany({
-                  where: {
-                    id: draft.id,
-                    status: { in: ["PENDING", "GENERATING"] },
-                  },
-                  data: {
-                    status: "FALLBACK",
-                    fallbackReason: "GENERATION_INCOMPLETE_AT_DEADLINE",
-                    resolvedBy: "SYSTEM",
-                    aiIntro: null,
-                    subject: rendered.subject,
-                    body: rendered.body,
-                  },
-                });
-                resolvedIncomplete += res.count;
-              }
-            }
-          });
-        }
-
-        totalResolvedDrafts += resolvedIncomplete;
-
-        // Also handle FLAGGED drafts for GENERATING
-        const flaggedDrafts = await db.generatedDraft.findMany({
-          where: {
-            campaignId: campaign.id,
-            promptVersion: fingerprint,
-            status: "FLAGGED",
-          },
-          include: {
-            recipient: true,
-          },
-        });
-
-        let resolvedFlagged = 0;
-        const flaggedChunks = chunkArray(flaggedDrafts, DEADLINE_CHUNK_SIZE);
-
-        for (const chunk of flaggedChunks) {
-          await db.$transaction(async (tx: any) => {
-            if (campaign.onUnresolved === "HOLD") {
-              const res = await tx.generatedDraft.updateMany({
-                where: {
-                  id: { in: chunk.map((d) => d.id) },
-                  status: "FLAGGED",
-                },
-                data: {
-                  status: "HELD",
-                  resolvedBy: "SYSTEM",
-                },
-              });
-              resolvedFlagged += res.count;
-            } else {
-              // FALLBACK_TO_PLAIN
-              for (const draft of chunk) {
-                const rendered = renderCampaignEmail({
-                  subjectTemplate: campaign.subjectTemplate,
-                  bodyTemplate: campaign.bodyTemplate,
-                  recipient: {
-                    firstName: draft.recipient?.firstName,
-                    company: draft.recipient?.company,
-                    role: draft.recipient?.role,
-                    note: draft.recipient?.note,
-                    extra: (draft.recipient?.extra ?? undefined) as
-                      | Record<string, unknown>
-                      | undefined,
-                  },
-                  campaign,
-                  aiIntro: undefined,
-                });
-
-                const res = await tx.generatedDraft.updateMany({
-                  where: {
-                    id: draft.id,
-                    status: "FLAGGED",
-                  },
-                  data: {
-                    status: "FALLBACK",
-                    fallbackReason: "UNRESOLVED_AT_DEADLINE",
-                    resolvedBy: "SYSTEM",
-                    aiIntro: null,
-                    subject: rendered.subject,
-                    body: rendered.body,
-                  },
-                });
-                resolvedFlagged += res.count;
-              }
-            }
-          });
-        }
-
-        totalResolvedDrafts += resolvedFlagged;
+        totalResolvedDrafts += resolvedIncomplete + resolvedFlagged;
 
         logger.info?.(
           `[Deadlines] Campaign ${campaign.id} resolved ${resolvedIncomplete} incomplete and ${resolvedFlagged} flagged drafts`
@@ -308,73 +270,13 @@ export async function enforceDeadlines(
 
       // c. EXCEPTION_REVIEW
       if (campaign.status === "EXCEPTION_REVIEW" && campaign.promptFingerprint) {
-        const fingerprint = campaign.promptFingerprint;
-        const flaggedDrafts = await db.generatedDraft.findMany({
-          where: {
-            campaignId: campaign.id,
-            promptVersion: fingerprint,
-            status: "FLAGGED",
-          },
-          include: {
-            recipient: true,
-          },
-        });
-
-        let resolvedFlagged = 0;
-        const flaggedChunks = chunkArray(flaggedDrafts, DEADLINE_CHUNK_SIZE);
-
-        for (const chunk of flaggedChunks) {
-          await db.$transaction(async (tx: any) => {
-            if (campaign.onUnresolved === "HOLD") {
-              const res = await tx.generatedDraft.updateMany({
-                where: {
-                  id: { in: chunk.map((d) => d.id) },
-                  status: "FLAGGED",
-                },
-                data: {
-                  status: "HELD",
-                  resolvedBy: "SYSTEM",
-                },
-              });
-              resolvedFlagged += res.count;
-            } else {
-              // FALLBACK_TO_PLAIN
-              for (const draft of chunk) {
-                const rendered = renderCampaignEmail({
-                  subjectTemplate: campaign.subjectTemplate,
-                  bodyTemplate: campaign.bodyTemplate,
-                  recipient: {
-                    firstName: draft.recipient?.firstName,
-                    company: draft.recipient?.company,
-                    role: draft.recipient?.role,
-                    note: draft.recipient?.note,
-                    extra: (draft.recipient?.extra ?? undefined) as
-                      | Record<string, unknown>
-                      | undefined,
-                  },
-                  campaign,
-                  aiIntro: undefined,
-                });
-
-                const res = await tx.generatedDraft.updateMany({
-                  where: {
-                    id: draft.id,
-                    status: "FLAGGED",
-                  },
-                  data: {
-                    status: "FALLBACK",
-                    fallbackReason: "UNRESOLVED_AT_DEADLINE",
-                    resolvedBy: "SYSTEM",
-                    aiIntro: null,
-                    subject: rendered.subject,
-                    body: rendered.body,
-                  },
-                });
-                resolvedFlagged += res.count;
-              }
-            }
-          });
-        }
+        const resolvedFlagged = await resolveUnfinished(
+          db,
+          campaign,
+          ["FLAGGED"],
+          "UNRESOLVED_AT_DEADLINE",
+          DEADLINE_CHUNK_SIZE
+        );
 
         totalResolvedDrafts += resolvedFlagged;
 
