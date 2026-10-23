@@ -182,20 +182,18 @@ export async function reconcileSends(
     if (!campaign.promptFingerprint) continue;
 
     let sweepJobs: CreatedEmailJobInfo[] = [];
-    if (typeof (db as any).$transaction === "function") {
-      await (db as any).$transaction(async (tx: any) => {
-        sweepJobs = await queueDraftsForSend(
-          tx,
-          {
-            id: campaign.id,
-            userId: campaign.userId,
-            scheduledAt: campaign.scheduledAt,
-            promptFingerprint: campaign.promptFingerprint!,
-          },
-          deps
-        );
-      });
-    }
+    await db.$transaction(async (tx: any) => {
+      sweepJobs = await queueDraftsForSend(
+        tx,
+        {
+          id: campaign.id,
+          userId: campaign.userId,
+          scheduledAt: campaign.scheduledAt,
+          promptFingerprint: campaign.promptFingerprint!,
+        },
+        deps
+      );
+    });
 
     for (const job of sweepJobs) {
       const scheduledAtMs = job.scheduledAt ? new Date(job.scheduledAt).getTime() : now;

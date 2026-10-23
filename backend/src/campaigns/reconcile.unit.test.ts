@@ -99,6 +99,7 @@ describe("reconcileSends", () => {
       emailJob: {
         findMany: vi.fn().mockResolvedValue([]),
       },
+      $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(db)),
     } as any;
 
     await reconcileSends(undefined, { db });
@@ -139,6 +140,7 @@ describe("reconcileSends", () => {
           },
         ]),
       },
+      $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(db)),
     } as any;
 
     const getJob = vi.fn().mockResolvedValue(null);
@@ -183,6 +185,7 @@ describe("reconcileSends", () => {
           },
         ]),
       },
+      $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(db)),
     } as any;
 
     const remove = vi.fn().mockResolvedValue(undefined);
@@ -223,6 +226,7 @@ describe("reconcileSends", () => {
             },
           ]),
         },
+        $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(db)),
       } as any;
 
       const remove = vi.fn();
@@ -240,6 +244,36 @@ describe("reconcileSends", () => {
     }
   );
 
+  it("runs sweep pass in $transaction for campaigns with promptFingerprint", async () => {
+    let txCalled = false;
+    const db = {
+      campaign: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "c1",
+          userId: "u1",
+          status: "SCHEDULED",
+          promptFingerprint: "fp1",
+          scheduledAt: new Date(),
+        }),
+      },
+      emailJob: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      generatedDraft: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => {
+        txCalled = true;
+        return cb(db);
+      }),
+    } as any;
+
+    const result = await reconcileSends("c1", { db });
+    expect(txCalled).toBe(true);
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(result.reconciledCount).toBe(0);
+  });
+
   it("ignores campaigns not in SCHEDULED or SENDING", async () => {
     const db = {
       campaign: {
@@ -248,6 +282,7 @@ describe("reconcileSends", () => {
       emailJob: {
         findMany: vi.fn(),
       },
+      $transaction: vi.fn(async (cb: (tx: any) => Promise<any>) => cb(db)),
     } as any;
 
     const result = await reconcileSends("c1", { db });
