@@ -1,6 +1,38 @@
-import { ApiResponse, AuthResponse, JobsResponse, ScheduleRequest, StatsResponse } from "@/types";
+import {
+  ApiResponse,
+  AuthResponse,
+  JobsResponse,
+  ScheduleRequest,
+  StatsResponse,
+  CampaignListItem,
+  CampaignDetail,
+  CreateCampaignPayload,
+  DryRunResponseData,
+  CreateCampaignSuccessData,
+  CampaignDraft,
+  ResolveDraftPayload,
+  ResolveDraftResponseData,
+  BulkResolvePayload,
+  BulkResolveResponseData,
+  ApproveSamplesResponseData,
+  CampaignStatusTransitionData,
+} from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+export class ApiError extends Error {
+  public status: number;
+  public code?: string;
+  public details?: any;
+
+  constructor(message: string, status: number, code?: string, details?: any) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
 
 class ApiClient {
   private baseUrl: string;
@@ -33,10 +65,26 @@ class ApiClient {
       headers,
     });
 
-    const data = await response.json();
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      throw new ApiError(
+        response.statusText || "Request failed with non-JSON response",
+        response.status
+      );
+    }
 
     if (!response.ok) {
-      throw new Error(data.error || "Request failed");
+      const errObj =
+        typeof data?.error === "object" && data?.error !== null ? data.error : null;
+      const message =
+        errObj?.message ||
+        (typeof data?.error === "string" ? data.error : data?.message || "Request failed");
+      const code = errObj?.code || (typeof data?.error === "string" ? data.error : undefined);
+      const details = errObj?.details;
+
+      throw new ApiError(message, response.status, code, details);
     }
 
     return data;
@@ -77,6 +125,146 @@ class ApiClient {
 
   async getStats() {
     return this.request<StatsResponse>("/api/jobs/stats");
+  }
+
+  // ─── Campaigns (Phase 7b) ───
+
+  async listCampaigns(
+    limit = 20,
+    cursor?: string
+  ): Promise<ApiResponse<CampaignListItem[]>> {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    if (cursor) params.set("cursor", cursor);
+
+    return this.request<CampaignListItem[]>(`/api/campaigns?${params.toString()}`);
+  }
+
+  async getCampaign(id: string): Promise<ApiResponse<CampaignDetail>> {
+    return this.request<CampaignDetail>(`/api/campaigns/${encodeURIComponent(id)}`);
+  }
+
+  async createCampaign(
+    payload: CreateCampaignPayload
+  ): Promise<ApiResponse<CreateCampaignSuccessData | DryRunResponseData>> {
+    return this.request<CreateCampaignSuccessData | DryRunResponseData>(
+      "/api/campaigns",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+  }
+
+  async startCampaign(
+    id: string
+  ): Promise<ApiResponse<CampaignStatusTransitionData>> {
+    return this.request<CampaignStatusTransitionData>(
+      `/api/campaigns/${encodeURIComponent(id)}/start`,
+      { method: "POST" }
+    );
+  }
+
+  async regenerateSamples(
+    id: string,
+    aiInstruction?: string | null
+  ): Promise<ApiResponse<CampaignStatusTransitionData>> {
+    return this.request<CampaignStatusTransitionData>(
+      `/api/campaigns/${encodeURIComponent(id)}/samples/regenerate`,
+      {
+        method: "POST",
+        body: JSON.stringify({ aiInstruction }),
+      }
+    );
+  }
+
+  async approveSamples(
+    id: string,
+    acknowledgeBudgetWarning?: boolean
+  ): Promise<ApiResponse<ApproveSamplesResponseData>> {
+    return this.request<ApproveSamplesResponseData>(
+      `/api/campaigns/${encodeURIComponent(id)}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ acknowledgeBudgetWarning }),
+      }
+    );
+  }
+
+  async pauseCampaign(
+    id: string
+  ): Promise<ApiResponse<CampaignStatusTransitionData>> {
+    return this.request<CampaignStatusTransitionData>(
+      `/api/campaigns/${encodeURIComponent(id)}/pause`,
+      { method: "POST" }
+    );
+  }
+
+  async resumeCampaign(
+    id: string
+  ): Promise<ApiResponse<CampaignStatusTransitionData>> {
+    return this.request<CampaignStatusTransitionData>(
+      `/api/campaigns/${encodeURIComponent(id)}/resume`,
+      { method: "POST" }
+    );
+  }
+
+  async cancelCampaign(
+    id: string
+  ): Promise<ApiResponse<CampaignStatusTransitionData>> {
+    return this.request<CampaignStatusTransitionData>(
+      `/api/campaigns/${encodeURIComponent(id)}/cancel`,
+      { method: "POST" }
+    );
+  }
+
+  async listDrafts(
+    id: string,
+    params?: {
+      status?: string;
+      isSample?: boolean;
+      cursor?: string;
+      limit?: number;
+    }
+  ): Promise<ApiResponse<CampaignDraft[]>> {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.set("status", params.status);
+    if (params?.isSample !== undefined)
+      searchParams.set("isSample", String(params.isSample));
+    if (params?.cursor) searchParams.set("cursor", params.cursor);
+    if (params?.limit) searchParams.set("limit", String(params.limit));
+
+    const qs = searchParams.toString();
+    return this.request<CampaignDraft[]>(
+      `/api/campaigns/${encodeURIComponent(id)}/drafts${qs ? `?${qs}` : ""}`
+    );
+  }
+
+  async resolveDraft(
+    id: string,
+    draftId: string,
+    action: ResolveDraftPayload
+  ): Promise<ApiResponse<ResolveDraftResponseData>> {
+    return this.request<ResolveDraftResponseData>(
+      `/api/campaigns/${encodeURIComponent(id)}/drafts/${encodeURIComponent(draftId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(action),
+      }
+    );
+  }
+
+  async bulkResolveDrafts(
+    id: string,
+    payload: BulkResolvePayload
+  ): Promise<ApiResponse<BulkResolveResponseData>> {
+    return this.request<BulkResolveResponseData>(
+      `/api/campaigns/${encodeURIComponent(id)}/drafts/bulk`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
   }
 }
 

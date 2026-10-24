@@ -33,12 +33,20 @@ export interface EmailJob {
 
 // ─── API Responses ───
 
+export interface ApiErrorObject {
+  code: string;
+  message: string;
+  details?: any;
+}
+
 export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
   message?: string;
 }
+
+export * from "./campaigns";
 
 export interface JobsResponse {
   jobs: EmailJob[];
