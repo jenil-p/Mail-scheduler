@@ -1,6 +1,8 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { User } from "@/types";
 
 interface HeaderProps {
@@ -9,33 +11,65 @@ interface HeaderProps {
 }
 
 export function Header({ user, onLogout }: HeaderProps) {
+  const pathname = usePathname();
+
+  const isCampaignsActive = pathname?.startsWith("/campaigns");
+  const isEmailsActive = pathname === "/";
+
   return (
     <header className="sticky top-0 z-40 border-b border-gray-200 bg-white/80 backdrop-blur-lg">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-        {/* Logo / Brand */}
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-600">
-            <svg
-              className="h-5 w-5 text-white"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
+        {/* Left: Brand + Navigation */}
+        <div className="flex items-center gap-6">
+          {/* Logo / Brand */}
+          <Link href="/" className="flex items-center gap-3 hover:opacity-90 transition-opacity">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-600">
+              <svg
+                className="h-5 w-5 text-white"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+                />
+              </svg>
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-gray-900 leading-tight">Sendly</h1>
+              <p className="text-xs text-gray-500">Email Scheduler</p>
+            </div>
+          </Link>
+
+          {/* Navigation */}
+          <nav className="flex items-center gap-1 sm:gap-2">
+            <Link
+              href="/"
+              className={`rounded-lg px-3 py-1.5 text-sm transition-all ${
+                isEmailsActive
+                  ? "bg-primary-50 font-semibold text-primary-700"
+                  : "font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              }`}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-              />
-            </svg>
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-gray-900">Sendly</h1>
-            <p className="text-xs text-gray-500">Email Scheduler</p>
-          </div>
+              Emails
+            </Link>
+            <Link
+              href="/campaigns"
+              className={`rounded-lg px-3 py-1.5 text-sm transition-all ${
+                isCampaignsActive
+                  ? "bg-primary-50 font-semibold text-primary-700"
+                  : "font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              }`}
+            >
+              Campaigns
+            </Link>
+          </nav>
         </div>
 
-        {/* User Info */}
+        {/* Right: User Info + Logout */}
         <div className="flex items-center gap-4">
           <div className="hidden items-center gap-3 sm:flex">
             <div className="text-right">
