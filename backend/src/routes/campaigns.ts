@@ -91,6 +91,31 @@ export const bulkResolveSchema = z.object({
   codes: z.array(z.string()).optional(),
 });
 
+export const listCampaignsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  cursor: z.string().max(64).optional(),
+});
+export const getCampaignsQuerySchema = listCampaignsQuerySchema;
+
+export const listDraftsQuerySchema = z.object({
+  status: z
+    .enum([
+      "PENDING",
+      "GENERATING",
+      "READY",
+      "FLAGGED",
+      "FALLBACK",
+      "APPROVED",
+      "HELD",
+      "QUEUED",
+    ])
+    .optional(),
+  isSample: z.enum(["true", "false"]).optional(),
+  cursor: z.string().max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export const getDraftsQuerySchema = listDraftsQuerySchema;
+
 // --- Error Mapper ---
 
 export interface CampaignApiErrorEnvelope {
@@ -573,17 +598,22 @@ router.post(
 router.get(
   "/",
   asyncHandler(async (req: Request, res: Response) => {
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 20));
-    const cursor =
-      typeof req.query.cursor === "string" && req.query.cursor.trim() !== ""
-        ? req.query.cursor.trim()
+    const parse = listCampaignsQuerySchema.safeParse(req.query);
+    if (!parse.success) {
+      throw parse.error;
+    }
+
+    const { limit, cursor } = parse.data;
+    const trimmedCursor =
+      typeof cursor === "string" && cursor.trim() !== ""
+        ? cursor.trim()
         : undefined;
 
     const campaigns = await prisma.campaign.findMany({
       where: { userId: req.user!.email },
       take: limit,
-      skip: cursor ? 1 : 0,
-      cursor: cursor ? { id: cursor } : undefined,
+      skip: trimmedCursor ? 1 : 0,
+      cursor: trimmedCursor ? { id: trimmedCursor } : undefined,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       select: {
         id: true,
@@ -785,12 +815,23 @@ router.get(
   "/:id/drafts",
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
+    const parse = listDraftsQuerySchema.safeParse(req.query);
+    if (!parse.success) {
+      throw parse.error;
+    }
+
     const campaign = (req as any).campaign;
+    const { status, isSample, cursor, limit } = parse.data;
+    const trimmedCursor =
+      typeof cursor === "string" && cursor.trim() !== ""
+        ? cursor.trim()
+        : undefined;
+
     const drafts = await listDrafts(campaign.id, {
-      status: req.query.status as any,
-      isSample: req.query.isSample !== undefined ? req.query.isSample === "true" : undefined,
-      cursor: typeof req.query.cursor === "string" ? req.query.cursor : undefined,
-      limit: req.query.limit ? parseInt(req.query.limit as string) : undefined,
+      status: status as any,
+      isSample: isSample !== undefined ? isSample === "true" : undefined,
+      cursor: trimmedCursor,
+      limit,
     });
 
     res.json({ success: true, data: drafts });

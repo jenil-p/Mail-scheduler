@@ -9,6 +9,8 @@ import campaignsRouter, {
   approveSamplesSchema,
   resolveDraftSchema,
   bulkResolveSchema,
+  listCampaignsQuerySchema,
+  listDraftsQuerySchema,
 } from "./campaigns";
 import { IllegalTransitionError } from "../campaigns/stateMachine";
 import {
@@ -294,6 +296,115 @@ describe("schemas (Phase 7a)", () => {
     expect(bulkResolveSchema.safeParse({ type: "approve" }).success).toBe(true);
     expect(bulkResolveSchema.safeParse({ type: "use_plain", codes: ["FORBIDDEN_CONTENT"] }).success).toBe(true);
     expect(bulkResolveSchema.safeParse({ type: "invalid" }).success).toBe(false);
+  });
+
+  describe("listCampaignsQuerySchema", () => {
+    it("accepts empty object and defaults limit to 20", () => {
+      const res = listCampaignsQuerySchema.safeParse({});
+      expect(res.success).toBe(true);
+      if (res.success) {
+        expect(res.data.limit).toBe(20);
+        expect(res.data.cursor).toBeUndefined();
+      }
+    });
+
+    it("accepts valid limit and cursor", () => {
+      const res = listCampaignsQuerySchema.safeParse({ limit: "15", cursor: "camp-123" });
+      expect(res.success).toBe(true);
+      if (res.success) {
+        expect(res.data.limit).toBe(15);
+        expect(res.data.cursor).toBe("camp-123");
+      }
+    });
+
+    it("rejects limit < 1", () => {
+      const res = listCampaignsQuerySchema.safeParse({ limit: 0 });
+      expect(res.success).toBe(false);
+      if (!res.success) {
+        expect(res.error.issues[0].path).toContain("limit");
+      }
+    });
+
+    it("rejects limit > 50", () => {
+      const res = listCampaignsQuerySchema.safeParse({ limit: 51 });
+      expect(res.success).toBe(false);
+      if (!res.success) {
+        expect(res.error.issues[0].path).toContain("limit");
+      }
+    });
+
+    it("rejects non-integer and non-numeric limit", () => {
+      expect(listCampaignsQuerySchema.safeParse({ limit: "abc" }).success).toBe(false);
+      expect(listCampaignsQuerySchema.safeParse({ limit: 10.5 }).success).toBe(false);
+    });
+
+    it("rejects cursor longer than 64 characters", () => {
+      const res = listCampaignsQuerySchema.safeParse({ cursor: "a".repeat(65) });
+      expect(res.success).toBe(false);
+      if (!res.success) {
+        expect(res.error.issues[0].path).toContain("cursor");
+      }
+    });
+  });
+
+  describe("listDraftsQuerySchema", () => {
+    it("accepts empty object and defaults limit to 50", () => {
+      const res = listDraftsQuerySchema.safeParse({});
+      expect(res.success).toBe(true);
+      if (res.success) {
+        expect(res.data.limit).toBe(50);
+      }
+    });
+
+    it("accepts valid query with all options", () => {
+      const res = listDraftsQuerySchema.safeParse({
+        status: "FLAGGED",
+        isSample: "true",
+        cursor: "d-1",
+        limit: "100",
+      });
+      expect(res.success).toBe(true);
+      if (res.success) {
+        expect(res.data.status).toBe("FLAGGED");
+        expect(res.data.isSample).toBe("true");
+        expect(res.data.cursor).toBe("d-1");
+        expect(res.data.limit).toBe(100);
+      }
+    });
+
+    it("accepts valid isSample 'false'", () => {
+      const res = listDraftsQuerySchema.safeParse({ isSample: "false" });
+      expect(res.success).toBe(true);
+    });
+
+    it("rejects invalid status", () => {
+      const res = listDraftsQuerySchema.safeParse({ status: "NOT_A_STATUS" });
+      expect(res.success).toBe(false);
+      if (!res.success) {
+        expect(res.error.issues[0].path).toContain("status");
+      }
+    });
+
+    it("rejects invalid isSample", () => {
+      const res = listDraftsQuerySchema.safeParse({ isSample: "yes" });
+      expect(res.success).toBe(false);
+      if (!res.success) {
+        expect(res.error.issues[0].path).toContain("isSample");
+      }
+    });
+
+    it("rejects cursor > 64 chars", () => {
+      const res = listDraftsQuerySchema.safeParse({ cursor: "c".repeat(65) });
+      expect(res.success).toBe(false);
+      if (!res.success) {
+        expect(res.error.issues[0].path).toContain("cursor");
+      }
+    });
+
+    it("rejects limit < 1 or > 100", () => {
+      expect(listDraftsQuerySchema.safeParse({ limit: 0 }).success).toBe(false);
+      expect(listDraftsQuerySchema.safeParse({ limit: 101 }).success).toBe(false);
+    });
   });
 });
 

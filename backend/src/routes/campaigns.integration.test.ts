@@ -387,6 +387,30 @@ suite("campaigns HTTP API (integration)", () => {
         expect(resB.body).toEqual(resNonexistent.body);
       }
     });
+
+    it("GET /api/campaigns invalid query -> 422 VALIDATION_FAILED with field path", async () => {
+      const res = await request(app)
+        .get("/api/campaigns?limit=999")
+        .set("Authorization", `Bearer ${tokenUserA}`);
+
+      expect(res.status).toBe(422);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe("VALIDATION_FAILED");
+      const issues = res.body.error.details.issues;
+      expect(issues.some((i: any) => i.path === "limit")).toBe(true);
+    });
+
+    it("GET /api/campaigns/:id/drafts invalid query -> 422 VALIDATION_FAILED with field path", async () => {
+      const res = await request(app)
+        .get(`/api/campaigns/${userACampaignId}/drafts?status=INVALID_STATUS`)
+        .set("Authorization", `Bearer ${tokenUserA}`);
+
+      expect(res.status).toBe(422);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe("VALIDATION_FAILED");
+      const issues = res.body.error.details.issues;
+      expect(issues.some((i: any) => i.path === "status")).toBe(true);
+    });
   });
 
   describe("BUDGET_WARNING 409 and acknowledgement", () => {
