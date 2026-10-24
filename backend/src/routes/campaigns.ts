@@ -444,14 +444,10 @@ router.post(
       });
     }
 
-    if (
-      reviewMode === "FULL" &&
-      csvResult.ok &&
-      csvResult.recipients.length > ai.fullReviewMaxRecipients
-    ) {
+    if (reviewMode === "FULL") {
       errors.push({
-        code: "FULL_REVIEW_TOO_LARGE",
-        message: `reviewMode FULL is only allowed for campaigns with up to ${ai.fullReviewMaxRecipients} recipients`,
+        code: "FULL_REVIEW_NOT_AVAILABLE",
+        message: "Full review of every draft is not available yet; use SAMPLE",
       });
     }
 
@@ -477,19 +473,25 @@ router.post(
 
     // Any blocking problem returns 422 with details
     if (errors.length > 0) {
-      const primaryCode =
-        errors.find((e) => e.code === "FULL_REVIEW_TOO_LARGE")?.code ??
-        errors.find((e) => e.code === "SCHEDULE_TOO_SOON")?.code ??
-        errors.find((e) => e.code === "RESERVED_COLUMN")?.code ??
-        errors.find((e) => e.code === "TOO_MANY_RECIPIENTS")?.code ??
-        errors.find((e) => e.code === "AI_INSTRUCTION_NOT_ALLOWED")?.code ??
-        (errors.length === 1 ? errors[0].code : "VALIDATION_FAILED");
+      const primary =
+        errors.find((e) => e.code === "FULL_REVIEW_NOT_AVAILABLE") ??
+        errors.find((e) => e.code === "SCHEDULE_TOO_SOON") ??
+        errors.find((e) => e.code === "RESERVED_COLUMN") ??
+        errors.find((e) => e.code === "TOO_MANY_RECIPIENTS") ??
+        errors.find((e) => e.code === "AI_INSTRUCTION_NOT_ALLOWED") ??
+        (errors.length === 1 ? errors[0] : null);
+
+      const primaryCode = primary?.code ?? "VALIDATION_FAILED";
+      const primaryMessage =
+        primary?.code === "FULL_REVIEW_NOT_AVAILABLE"
+          ? primary.message
+          : "Campaign validation failed";
 
       res.status(422).json({
         success: false,
         error: {
           code: primaryCode,
-          message: "Campaign validation failed",
+          message: primaryMessage,
           details: {
             errors,
             warnings,

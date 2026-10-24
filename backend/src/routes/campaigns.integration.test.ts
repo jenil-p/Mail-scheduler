@@ -238,20 +238,15 @@ suite("campaigns HTTP API (integration)", () => {
       expect(res.body.error.code).toBe("SCHEDULE_TOO_SOON");
     });
 
-    it("blocking problem: reviewMode FULL too large -> 422 with FULL_REVIEW_TOO_LARGE", async () => {
+    it("blocking problem: reviewMode FULL not available -> 422 with FULL_REVIEW_NOT_AVAILABLE", async () => {
       const scheduledAt = new Date(Date.now() + 3_600_000).toISOString();
-      const maxFull = config.ai.fullReviewMaxRecipients;
-      const rows = ["email"];
-      for (let i = 0; i < maxFull + 2; i++) {
-        rows.push(`user${i}@example.com`);
-      }
-      const csv = rows.join("\n");
+      const csv = "email\nalice@example.com";
 
       const res = await request(app)
         .post("/api/campaigns")
         .set("Authorization", `Bearer ${tokenUserA}`)
         .send({
-          name: "Full Review Too Large",
+          name: "Full Review Not Available",
           subjectTemplate: "Hi",
           bodyTemplate: "Body {{ai_intro}} {{unsubscribe_link}}",
           linkUrl: "https://example.com",
@@ -264,7 +259,8 @@ suite("campaigns HTTP API (integration)", () => {
 
       expect(res.status).toBe(422);
       expect(res.body.success).toBe(false);
-      expect(res.body.error.code).toBe("FULL_REVIEW_TOO_LARGE");
+      expect(res.body.error.code).toBe("FULL_REVIEW_NOT_AVAILABLE");
+      expect(res.body.error.message).toBe("Full review of every draft is not available yet; use SAMPLE");
     });
 
     it("oversized body -> 413 PAYLOAD_TOO_LARGE", async () => {
