@@ -345,6 +345,9 @@ async function requireUserCampaign(req: Request, res: Response, next: NextFuncti
 
 const router = Router();
 
+// Authenticate all routes BEFORE body parsing so unauthenticated requests are rejected before any body is read
+router.use(authenticate);
+
 // Router's own 1mb parser (mounted before global 10mb parser)
 router.use(express.json({ limit: "1mb" }));
 
@@ -354,7 +357,6 @@ router.use(express.json({ limit: "1mb" }));
  */
 router.post(
   "/",
-  authenticate,
   asyncHandler(async (req: Request, res: Response) => {
     const parse = createCampaignSchema.safeParse(req.body);
     if (!parse.success) {
@@ -568,7 +570,6 @@ router.post(
  */
 router.get(
   "/",
-  authenticate,
   asyncHandler(async (req: Request, res: Response) => {
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 20));
     const cursor =
@@ -615,7 +616,6 @@ router.get(
  */
 router.get(
   "/:id",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const campaign = (req as any).campaign;
@@ -653,7 +653,6 @@ router.get(
  */
 router.post(
   "/:id/start",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const campaign = (req as any).campaign;
@@ -680,7 +679,6 @@ router.post(
  */
 router.post(
   "/:id/samples/regenerate",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const parse = regenerateSamplesSchema.safeParse(req.body);
@@ -704,7 +702,6 @@ router.post(
  */
 router.post(
   "/:id/approve",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const parse = approveSamplesSchema.safeParse(req.body);
@@ -751,7 +748,6 @@ router.post(
  */
 router.post(
   "/:id/pause",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const campaign = (req as any).campaign;
@@ -762,7 +758,6 @@ router.post(
 
 router.post(
   "/:id/resume",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const campaign = (req as any).campaign;
@@ -773,7 +768,6 @@ router.post(
 
 router.post(
   "/:id/cancel",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const campaign = (req as any).campaign;
@@ -787,7 +781,6 @@ router.post(
  */
 router.get(
   "/:id/drafts",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const campaign = (req as any).campaign;
@@ -808,7 +801,6 @@ router.get(
  */
 router.patch(
   "/:id/drafts/:draftId",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const parse = resolveDraftSchema.safeParse(req.body);
@@ -845,7 +837,6 @@ router.patch(
  */
 router.post(
   "/:id/drafts/bulk",
-  authenticate,
   requireUserCampaign,
   asyncHandler(async (req: Request, res: Response) => {
     const parse = bulkResolveSchema.safeParse(req.body);

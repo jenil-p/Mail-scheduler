@@ -300,6 +300,30 @@ suite("campaigns HTTP API (integration)", () => {
       expect(res.body.success).toBe(false);
       expect(res.body.error.code).toBe("INVALID_JSON");
     });
+
+    it("no Authorization header with an oversized body returns 401 (not 413)", async () => {
+      const hugeString = "x".repeat(1.2 * 1024 * 1024);
+
+      const res = await request(app)
+        .post("/api/campaigns")
+        .send({
+          name: "Huge Payload",
+          bodyTemplate: hugeString,
+        });
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+    });
+
+    it("no Authorization header with a malformed JSON body returns 401 (not 400)", async () => {
+      const res = await request(app)
+        .post("/api/campaigns")
+        .set("Content-Type", "application/json")
+        .send('{"name": "Bad JSON", ');
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+    });
   });
 
   describe("ownership & 404 behavior", () => {
