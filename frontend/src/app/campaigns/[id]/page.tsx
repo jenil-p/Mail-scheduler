@@ -31,6 +31,7 @@ import {
   isDraftHardBlocked,
   getHardBlockExplanation,
 } from "@/lib/campaignErrors";
+import { nextPollDelayMs } from "@/lib/campaignPolling";
 
 export default function CampaignDetailPage() {
   const params = useParams();
@@ -102,16 +103,22 @@ function CampaignDetailView({
   const isPollingRef = useRef(false);
   const hasPollErrorRef = useRef(false);
   const isHiddenRef = useRef(false);
+  const stoppedRef = useRef(false);
+  const requestCounterRef = useRef(0);
 
   // Load campaign data from API
   const fetchCampaign = useCallback(
-    async (isBackground = false) => {
+    async (isBackground = false, isCancelled?: () => boolean) => {
+      const requestId = ++requestCounterRef.current;
       if (!isBackground) {
         setInitialLoading(true);
         setLoadError(null);
       }
       try {
         const res = await api.getCampaign(campaignId);
+        if (requestId !== requestCounterRef.current || isCancelled?.()) {
+          return;
+        }
         const data = res.data;
         if (data) {
           setCampaign(data);
@@ -120,17 +127,27 @@ function CampaignDetailView({
           setSampleInstruction((prev) => (prev ? prev : data.aiInstruction || ""));
         }
       } catch (err: any) {
+        if (requestId !== requestCounterRef.current || isCancelled?.()) {
+          return;
+        }
         hasPollErrorRef.current = true;
+        const isAuthOrNotFound =
+          err instanceof ApiError && (err.status === 401 || err.status === 404);
+        if (isAuthOrNotFound) {
+          stoppedRef.current = true;
+        }
         const msg =
           err instanceof ApiError
             ? mapApiErrorCodeToMessage(err.code, err.details, err.message)
             : err.message || "Failed to load campaign";
-        if (!isBackground) {
+        if (!isBackground || isAuthOrNotFound) {
           setLoadError(msg);
         }
       } finally {
-        if (!isBackground) {
-          setInitialLoading(false);
+        if (requestId === requestCounterRef.current && !isCancelled?.()) {
+          if (!isBackground) {
+            setInitialLoading(false);
+          }
         }
       }
     },
@@ -144,7 +161,7 @@ function CampaignDetailView({
 
   // Polling Effect: 5s base, 15s on hidden tab or error, stops on terminal states or unmount
   useEffect(() => {
-    if (!campaign) return;
+    if (!campaign || stoppedRef.current) return;
 
     const { shouldPoll } = getAvailableActionsForStatus(
       campaign.status,
@@ -152,28 +169,37 @@ function CampaignDetailView({
     );
     if (!shouldPoll) return;
 
+    let cancelled = false;
     let timerId: NodeJS.Timeout | null = null;
 
     const handleVisibilityChange = () => {
       isHiddenRef.current = document.visibilityState === "hidden";
-      if (!isHiddenRef.current) {
+      if (!isHiddenRef.current && !cancelled && !stoppedRef.current) {
         // Tab became visible again; immediately refresh
-        fetchCampaign(true);
+        fetchCampaign(true, () => cancelled);
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     const scheduleNextPoll = () => {
-      const delay =
-        isHiddenRef.current || hasPollErrorRef.current ? 15000 : 5000;
+      if (cancelled || stoppedRef.current) return;
+      const delay = nextPollDelayMs({
+        hidden: isHiddenRef.current,
+        hadError: hasPollErrorRef.current,
+      });
 
       timerId = setTimeout(async () => {
+        if (cancelled || stoppedRef.current) return;
         if (!isPollingRef.current) {
           isPollingRef.current = true;
-          await fetchCampaign(true);
-          isPollingRef.current = false;
+          try {
+            await fetchCampaign(true, () => cancelled);
+          } finally {
+            isPollingRef.current = false;
+          }
         }
+        if (cancelled || stoppedRef.current) return;
         scheduleNextPoll();
       }, delay);
     };
@@ -181,6 +207,7 @@ function CampaignDetailView({
     scheduleNextPoll();
 
     return () => {
+      cancelled = true;
       if (timerId) clearTimeout(timerId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
