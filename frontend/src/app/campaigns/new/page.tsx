@@ -15,6 +15,7 @@ import {
   canCreateCampaign,
   isCsvFileWithinLimit,
   MAX_CSV_SIZE_BYTES,
+  validateRequestSize,
 } from "@/lib/campaignGating";
 import { mapApiErrorCodeToMessage } from "@/lib/campaignErrors";
 import { DryRunResponseData, CreateCampaignSuccessData } from "@/types";
@@ -138,7 +139,7 @@ function NewCampaignForm({
         ? new Date(form.scheduledAt).toISOString()
         : "";
 
-      const res = await api.createCampaign({
+      const payload = {
         name: form.name,
         subjectTemplate: form.subjectTemplate,
         bodyTemplate: form.bodyTemplate,
@@ -146,12 +147,21 @@ function NewCampaignForm({
         unsubscribeUrl: form.unsubscribeUrl,
         aiEnabled: form.aiEnabled,
         aiInstruction: form.aiEnabled ? form.aiInstruction : null,
-        reviewMode: "SAMPLE",
+        reviewMode: "SAMPLE" as const,
         onUnresolved: form.onUnresolved,
         scheduledAt: scheduledIso,
         csv: form.csv,
         dryRun: true,
-      });
+      };
+
+      const sizeCheck = validateRequestSize(payload);
+      if (!sizeCheck.valid) {
+        setApiError(sizeCheck.error);
+        setIsValidating(false);
+        return;
+      }
+
+      const res = await api.createCampaign(payload);
 
       setDryRunResult(res.data as DryRunResponseData);
       setValidatedFingerprint(currentFingerprint);
@@ -193,7 +203,7 @@ function NewCampaignForm({
     try {
       const scheduledIso = new Date(form.scheduledAt).toISOString();
 
-      const res = await api.createCampaign({
+      const payload = {
         name: form.name,
         subjectTemplate: form.subjectTemplate,
         bodyTemplate: form.bodyTemplate,
@@ -201,12 +211,21 @@ function NewCampaignForm({
         unsubscribeUrl: form.unsubscribeUrl,
         aiEnabled: form.aiEnabled,
         aiInstruction: form.aiEnabled ? form.aiInstruction : null,
-        reviewMode: "SAMPLE",
+        reviewMode: "SAMPLE" as const,
         onUnresolved: form.onUnresolved,
         scheduledAt: scheduledIso,
         csv: form.csv,
         dryRun: false,
-      });
+      };
+
+      const sizeCheck = validateRequestSize(payload);
+      if (!sizeCheck.valid) {
+        setApiError(sizeCheck.error);
+        setIsCreating(false);
+        return;
+      }
+
+      const res = await api.createCampaign(payload);
 
       const successData = res.data as CreateCampaignSuccessData;
       if (successData?.campaignId) {

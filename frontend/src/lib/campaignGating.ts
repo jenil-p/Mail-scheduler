@@ -76,3 +76,37 @@ export const MAX_CSV_SIZE_BYTES = 1024 * 1024; // 1 MB
 export function isCsvFileWithinLimit(fileSizeBytes: number): boolean {
   return fileSizeBytes <= MAX_CSV_SIZE_BYTES;
 }
+
+/**
+ * Maximum JSON request body size accepted by the server (1,000,000 bytes).
+ */
+export const MAX_REQUEST_SIZE_BYTES = 1_000_000;
+
+export function getPayloadByteLength(payload: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(payload)).length;
+}
+
+export function getPayloadSizeErrorMessage(byteLength: number): string {
+  const kb = Math.round(byteLength / 1000).toLocaleString("en-US");
+  return `This campaign is too large to send (about ${kb} KB of 1,000 KB). Remove rows or shorten the templates.`;
+}
+
+export function validateRequestSize(payload: unknown): {
+  valid: boolean;
+  sizeBytes: number;
+  error: string | null;
+} {
+  const sizeBytes = getPayloadByteLength(payload);
+  if (sizeBytes > MAX_REQUEST_SIZE_BYTES) {
+    return {
+      valid: false,
+      sizeBytes,
+      error: getPayloadSizeErrorMessage(sizeBytes),
+    };
+  }
+  return {
+    valid: true,
+    sizeBytes,
+    error: null,
+  };
+}
