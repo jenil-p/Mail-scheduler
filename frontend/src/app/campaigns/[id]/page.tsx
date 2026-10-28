@@ -854,7 +854,7 @@ function CampaignDetailView({
             </div>
 
             <p className="mt-2.5 text-[11px] text-gray-500 italic">
-              Sending is paced by the sender's hourly limit (up to 200 emails/hour).
+              Sending is paced by the sender's hourly limit.
             </p>
           </div>
         </div>
