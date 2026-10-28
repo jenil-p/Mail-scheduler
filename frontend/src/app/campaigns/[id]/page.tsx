@@ -453,7 +453,7 @@ function CampaignDetailView({
                   ...d,
                   aiIntro: editingIntro,
                   status: res.data?.status || "FLAGGED",
-                  flagReasons: res.data?.flagReasons || [],
+                  flagReasons: res.data?.flagReasons ?? [],
                 }
               : d
           )
@@ -1079,8 +1079,8 @@ function CampaignDetailView({
               ) : (
                 <div className="space-y-4">
                   {flaggedDrafts.map((draft) => {
-                    const isHardBlocked = isDraftHardBlocked(draft.flagReasons);
-                    const hardBlockExplanation = getHardBlockExplanation(draft.flagReasons);
+                    const isHardBlocked = isDraftHardBlocked(draft.flagReasons ?? []);
+                    const hardBlockExplanation = getHardBlockExplanation(draft.flagReasons ?? []);
                     const isEditing = editingDraftId === draft.id;
 
                     return (
@@ -1116,7 +1116,7 @@ function CampaignDetailView({
                             Flag Reasons:
                           </p>
                           <ul className="list-disc pl-5 space-y-0.5 text-xs text-amber-900">
-                            {draft.flagReasons.map((f, i) => (
+                            {(draft.flagReasons ?? []).map((f, i) => (
                               <li key={i}>
                                 <span className="font-semibold">[{f.code}] </span>
                                 {mapGuardrailCodeToSentence(f.code)}

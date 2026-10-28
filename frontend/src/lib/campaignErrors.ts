@@ -40,15 +40,15 @@ export function mapGuardrailCodeToSentence(code: GuardrailCode): string {
 /**
  * Checks if a draft has any guardrail failures that cannot be approved directly.
  */
-export function isDraftHardBlocked(flagReasons: GuardrailFailure[] = []): boolean {
-  return flagReasons.some((r) => HARD_BLOCK_CODES.includes(r.code));
+export function isDraftHardBlocked(flagReasons?: GuardrailFailure[] | null): boolean {
+  return (flagReasons ?? []).some((r) => HARD_BLOCK_CODES.includes(r.code));
 }
 
 /**
  * Returns a human-friendly explanation of why a draft cannot be approved.
  */
-export function getHardBlockExplanation(flagReasons: GuardrailFailure[] = []): string | null {
-  const blocked = flagReasons.filter((r) => HARD_BLOCK_CODES.includes(r.code));
+export function getHardBlockExplanation(flagReasons?: GuardrailFailure[] | null): string | null {
+  const blocked = (flagReasons ?? []).filter((r) => HARD_BLOCK_CODES.includes(r.code));
   if (blocked.length === 0) return null;
   const labels = blocked.map((b) => b.code).join(", ");
   return `This draft cannot be approved because it has security-critical flags (${labels}). You must edit the sentence or use the plain email.`;
