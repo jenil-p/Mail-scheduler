@@ -20,6 +20,20 @@ import {
 import { mapApiErrorCodeToMessage } from "@/lib/campaignErrors";
 import { DryRunResponseData, CreateCampaignSuccessData } from "@/types";
 
+function extractBlockingErrors(err: ApiError): Array<{ code: string; message: string; field?: string }> {
+  if (err.details?.errors && Array.isArray(err.details.errors) && err.details.errors.length > 0) {
+    return err.details.errors;
+  }
+  if (err.details?.issues && Array.isArray(err.details.issues) && err.details.issues.length > 0) {
+    return err.details.issues.map((issue: any) => ({
+      code: "VALIDATION_FAILED",
+      field: issue.path || issue.field,
+      message: issue.message,
+    }));
+  }
+  return [{ code: err.code || "VALIDATION_FAILED", message: err.message }];
+}
+
 export default function NewCampaignPage() {
   return (
     <AuthGuard>
@@ -167,11 +181,9 @@ function NewCampaignForm({
       setValidatedFingerprint(currentFingerprint);
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 422 && err.details) {
-        // Validation failed with structured details
+        // Validation failed with structured details (errors or zod issues)
         setDryRunResult({
-          errors: err.details.errors || [
-            { code: err.code || "VALIDATION_FAILED", message: err.message },
-          ],
+          errors: extractBlockingErrors(err),
           warnings: err.details.warnings || [],
           rejected: err.details.rejected || [],
           rejectedCount: err.details.rejectedCount || 0,
@@ -234,11 +246,24 @@ function NewCampaignForm({
         router.push("/campaigns");
       }
     } catch (err: any) {
-      const msg =
-        err instanceof ApiError
-          ? mapApiErrorCodeToMessage(err.code, err.details, err.message)
-          : err.message || "Failed to create campaign";
-      setApiError(msg);
+      if (err instanceof ApiError && err.status === 422 && err.details) {
+        setDryRunResult({
+          errors: extractBlockingErrors(err),
+          warnings: err.details.warnings || [],
+          rejected: err.details.rejected || [],
+          rejectedCount: err.details.rejectedCount || 0,
+          headerMapping: err.details.headerMapping || {},
+          extraColumns: err.details.extraColumns || [],
+        });
+        setValidatedFingerprint(getFormFingerprint(form));
+        setApiError(null);
+      } else {
+        const msg =
+          err instanceof ApiError
+            ? mapApiErrorCodeToMessage(err.code, err.details, err.message)
+            : err.message || "Failed to create campaign";
+        setApiError(msg);
+      }
       setIsCreating(false);
     }
   };
