@@ -1,14 +1,14 @@
-import nodemailer from "nodemailer";
+import nodemailer, { type Transporter } from "nodemailer";
 
 /**
  * Creates and returns an Ethereal Email test account + transporter.
  * Caches the transporter globally so we only create one account per server start.
  */
-let cachedTransporter: nodemailer.Transporter | null = null;
+let cachedTransporter: Transporter | null = null;
 let cachedEtherealUser: string | null = null;
 
 export async function getEtherealTransporter(): Promise<{
-  transporter: nodemailer.Transporter;
+  transporter: Transporter;
   user: string;
 }> {
   if (cachedTransporter && cachedEtherealUser) {
